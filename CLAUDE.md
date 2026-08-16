@@ -39,6 +39,29 @@ workspace/CLAUDE.md        instrucciones para el agente de adentro
 README.md                  documentacion completa
 ```
 
+## Las tres identidades
+
+Antes de sugerir cualquier comando, resolvé **como quién se corre**. Es la causa más común
+de errores acá.
+
+| Identidad | Corre | Privilegios |
+|---|---|---|
+| el usuario (uid 1000) | `deploy.sh` | sudo, grupo `docker` |
+| `agentic` (uid 1001) | `run.sh`, `ctl.sh`, `diag.sh` | ninguno: sin sudo, sin grupo `docker`, daemon rootless propio |
+| `agentic` en el contenedor | `claude`, `omp`, `herdr` | ninguno; la imagen no trae `ssh` ni `docker` |
+
+- `deploy.sh` **sin** `sudo` — llama a sudo por dentro. Con `sudo ./deploy.sh`, `$HOME` es
+  `/root` y busca los binarios donde no están. El script se planta si sos root.
+- `run.sh` / `ctl.sh` / `diag.sh` **con** `sudo -u agentic -H`. El `-H` es obligatorio: sin
+  él `$HOME` sigue siendo el del usuario y el token termina en el `.config` equivocado.
+- **`agentic` no puede leer el home del usuario** por ningún camino, y es intencional. No
+  propongas `chmod`, ni bind mounts, ni `--privileged` para saltearlo.
+
+**`loginctl enable-linger agentic` es obligatorio y no es obvio.** Sin linger, systemd baja
+la sesión de usuario de `agentic` (nadie hace login como él), y con ella el `dockerd`
+rootless. Síntoma: `run.sh` dice "no encuentro el socket", pero recién después de un
+reboot. `deploy.sh` lo chequea y avisa.
+
 ## Reglas
 
 **El repo y el deployment son dos lugares distintos, a propósito.** El código corre en

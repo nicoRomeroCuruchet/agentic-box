@@ -38,7 +38,55 @@ los agentes de adentro no pueden saltar a otras máquinas.
 
 ---
 
+## Quién ejecuta qué
+
+Esto es lo primero que hay que tener claro: **intervienen tres identidades** y confundirlas
+es la causa de la mayoría de los errores raros.
+
+| Identidad | Qué es | Qué corre | Privilegios |
+|---|---|---|---|
+| **vos** (`nromero`, uid 1000) | tu cuenta | `deploy.sh` | sudo, grupo `docker` |
+| **`agentic`** (uid 1001) | cuenta aislada del host | `run.sh`, `ctl.sh`, `diag.sh` | **ninguno** — sin sudo, sin grupo `docker`, con su propio daemon rootless |
+| **`agentic` adentro del contenedor** (uid 1001) | los agentes | `claude`, `omp`, `herdr` | ninguno; sin `ssh` ni `docker` en la imagen |
+
+El uid coincide a propósito entre el host y el contenedor: así los volúmenes conservan el
+dueño y el proceso de adentro puede escribir en ellos.
+
+```bash
+./deploy.sh                                              # como VOS (el script llama a sudo solo)
+sudo -u agentic -H bash /home/agentic/agentic-box/run.sh  # como AGENTIC
+```
+
+Tres reglas que se desprenden:
+
+- **`deploy.sh` va sin `sudo`.** Corriéndolo entero como root, `$HOME` pasa a ser `/root`,
+  busca los binarios en `/root/.local/bin` y falla con un error que no dice eso. El script
+  se planta si detecta que sos root.
+- **`run.sh` y `ctl.sh` van con `sudo -u agentic -H`.** El `-H` no es opcional: sin él
+  `$HOME` sigue siendo el tuyo y el archivo del token termina en `/home/nromero/.config`
+  en vez de `/home/agentic/.config`.
+- **`agentic` no puede leer `/home/nromero`**, ni por permisos, ni por sudo, ni montándolo
+  en un contenedor: el mapeo de usuarios de rootless lo impide, incluso con `--privileged`.
+  Eso es intencional. Lo que tenga que cruzar el límite, lo cruza `deploy.sh`.
+
+### El linger, que es lo más frágil de todo
+
+```bash
+sudo loginctl enable-linger agentic     # una sola vez
+loginctl show-user agentic -p Linger    # tiene que decir Linger=yes
+```
+
+Sin linger, systemd mata la sesión de usuario de `agentic` cuando no queda ninguna sesión
+suya abierta — que es **siempre**, porque nadie hace login como `agentic`. Sin sesión no
+hay `dockerd`, sin `dockerd` no hay socket, y `run.sh` falla con "no encuentro el socket".
+
+No da ningún síntoma hasta el primer reboot. `deploy.sh` lo chequea y avisa.
+
+---
+
 ## Arrancar
+
+Todo esto, **desde tu cuenta**:
 
 ```bash
 git clone git@github.com:nicoRomeroCuruchet/agentic-box.git
