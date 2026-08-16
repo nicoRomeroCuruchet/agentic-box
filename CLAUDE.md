@@ -120,3 +120,16 @@ spawn-model <alias>       # tiene que crear el pane Y arrancar OMP ahi
   viejas sin que nada avise.
 - **`sh` no expande llaves.** `sudo sh -c 'cp a{1,2} dst'` copia cero archivos y sale bien.
   Usá `bash -c` o lista explícita.
+- **Los globs los expande el shell que los escribe, no el que los ejecuta.** Este es el
+  mismo error que el anterior, generalizado, y acá muerde seguido porque hay un límite de
+  privilegios en el medio:
+
+  ```bash
+  sudo chmod +x /home/agentic/agentic-box/*.sh          # MAL
+  sudo bash -c 'chmod +x /home/agentic/agentic-box/*.sh' # BIEN
+  ```
+
+  El primero lo expande tu shell, que no puede leer `/home/agentic` (750): no matchea
+  nada, pasa el literal, y `chmod` se queja de un archivo llamado `*.sh`. Con `set -e` eso
+  aborta el script. **Regla: si la ruta está del otro lado del límite de permisos, el glob
+  va adentro de `sudo bash -c`.**

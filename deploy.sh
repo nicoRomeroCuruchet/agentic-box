@@ -95,7 +95,18 @@ sudo install -d -o agentic -g agentic -m 755 "$DST"
 sudo cp -r "$REPO"/. "$DST"/
 sudo rm -rf "$DST/.git"          # el repo no tiene por que viajar al deployment
 sudo chown -R agentic:agentic "$DST"
-sudo chmod +x "$DST"/*.sh "$DST"/bin/* "$DST"/bin-tools/*
+
+# El chmod va DENTRO de sudo bash -c, no como `sudo chmod "$DST"/*.sh`.
+#
+# Los globs los expande el shell que los escribe, y ese shell sos vos: no podes
+# leer /home/agentic (750), asi que `"$DST"/*.sh` no matchea nada, se pasa
+# literal, y chmod se queja de un archivo llamado '*.sh'. Con `set -e` eso aborta
+# el script justo antes del --run, y la caja no arranca.
+#
+# En la practica el chmod es redundante — `cp -r` ya preserva los permisos del
+# origen — pero se deja como red por si algun archivo llega sin +x. Por eso
+# tampoco es fatal si algo no esta: || true.
+sudo bash -c "cd '$DST' && chmod +x *.sh bin/* bin-tools/* 2>/dev/null || true"
 
 echo "== listo =="
 sudo ls -la "$DST" | sed 's/^/   /'
