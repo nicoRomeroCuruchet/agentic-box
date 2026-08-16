@@ -127,6 +127,12 @@ spawn-model <alias>       # must create the pane AND start OMP in it
 
 ## Traps
 
+- **The workspace volume is the user's space; do not litter it.** `refresh_claude_md` used
+  to drop a visible `CLAUDE.md.previous` beside the original on every refresh, so the
+  workspace accumulated one backup per change — and renaming that suffix once left an
+  orphan behind. It now keeps a single hidden `.CLAUDE.md.bak`, overwritten. Anything the
+  entrypoint writes there is visible to the user forever, because the volume survives
+  rebuilds.
 - **The sidebar groups agents by workspace, and the workspace label is separate from the
   pane titles.** herdr names the workspace after the directory the session started in —
   always `/home/agentic/workspace` here — so every agent appears under a heading reading

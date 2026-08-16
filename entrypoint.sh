@@ -25,12 +25,19 @@ SESSION="${HERDR_SESSION:-agentic}"
 refresh_claude_md() {
     local source=/usr/local/share/agentic-box/CLAUDE.md
     local target=/home/agentic/workspace/CLAUDE.md
+    # A single hidden file, overwritten. An earlier version wrote
+    # CLAUDE.md.previous next to the original on every refresh, which meant the
+    # user's workspace accumulated one visible backup per change — and renaming
+    # the suffix once left an orphan behind. The workspace is the user's space:
+    # the box should not litter it.
+    local backup=/home/agentic/workspace/.CLAUDE.md.bak
     [ -f "$source" ] || return 0
     cmp -s "$source" "$target" 2>/dev/null && return 0
-    # If a different one was there, keep it rather than losing it.
-    [ -f "$target" ] && cp "$target" "${target}.previous"
+    # If a different one was there, keep it rather than losing it: it may have
+    # been edited by hand.
+    [ -f "$target" ] && cp "$target" "$backup"
     cp "$source" "$target"
-    echo "entrypoint: CLAUDE.md updated (the old one is at CLAUDE.md.previous)" >&2
+    echo "entrypoint: CLAUDE.md updated (previous version kept at .CLAUDE.md.bak)" >&2
 }
 
 setup_layout() {
