@@ -1,211 +1,228 @@
 # agentic-box
 
-Una caja aislada donde **Claude Code maneja agentes de modelos locales**.
+An isolated box where **Claude Code drives local model agents**.
 
-Corre en un contenedor Docker rootless, como un usuario sin privilegios, con
-[herdr](https://github.com/) orquestando panes. Claude Code arranca solo; a pedido levanta
-agentes [OMP](https://github.com/) contra los servidores llama.cpp de la tailnet, cada uno
-en su propio pane. Vos le hablas a Claude; Claude le habla a los modelos.
+It runs in a rootless Docker container, as an unprivileged user, with `herdr` orchestrating
+panes. Claude Code starts alone; on demand it launches OMP agents against llama.cpp servers
+on your private network, each in its own pane. You talk to Claude; Claude talks to the
+models.
 
 ```
 ┌──────────────────────┬──────────────────────┐
 │                      │                      │
-│     Claude Code      │   qwen38-27b (OMP)   │   spawn-model qwen38-27b
-│                      │   -> udesa, 3090     │
+│     Claude Code      │   model-a (OMP)      │   spawn-model model-a
+│                      │   -> host A          │
 │   spawn-model ...    ├──────────────────────┤
-│   herdr agent prompt │   ornith-35b (OMP)   │   spawn-model ornith-35b
-│   herdr agent read   │   -> a1554, 4090     │
+│   herdr agent prompt │   model-b (OMP)      │   spawn-model model-b
+│   herdr agent read   │   -> host B          │
 │                      │                      │
 └──────────────────────┴──────────────────────┘
-        contenedor rootless, usuario agentic, sin ssh ni docker adentro
+    rootless container, unprivileged user, no ssh and no docker inside
 ```
 
-Los servidores se levantan con [llamacpp-compose](https://github.com/nicoRomeroCuruchet/llamacpp-compose),
-que es de donde salen los modelos y las mediciones que se citan acá.
+## The model servers are a separate project
+
+This box is a **client**. It does not serve any model and does not need to know how they
+are served — only that something answers `/health` and `/v1/models` in the OpenAI-compatible
+format, at a URL listed in `models.conf`.
+
+The setup used here is
+**[llamacpp-compose](https://github.com/nicoRomeroCuruchet/llamacpp-compose)**: a
+`docker compose` wrapper around llama.cpp that serves a GGUF model on a GPU. That repo is
+where the models are configured, where the tuning was measured, and where you go when a
+model stops responding. Any other OpenAI-compatible server works too.
 
 ---
 
-## Por qué
+## Why
 
-Delegar a un modelo local no cuesta tokens de API y no saca los datos de la tailnet. Pero
-copiar y pegar entre dos terminales lo vuelve inutilizable. Acá Claude maneja el otro pane
-por la API de socket de herdr: le manda la consigna, espera, lee la respuesta y sigue.
+Delegating to a local model costs no API tokens and keeps the data on your own network. But
+copying and pasting between two terminals makes it unusable in practice. Here Claude drives
+the other pane through herdr's socket API: it sends the instruction, waits, reads the
+answer and carries on.
 
-El aislamiento no es decorativo. El usuario `agentic` **no tiene sudo, no está en el grupo
-`docker`, corre su propio daemon rootless y no puede leer `/home/nromero`** — ni por
-permisos, ni montándolo en un contenedor. La imagen tampoco trae `ssh` ni `docker`, así que
-los agentes de adentro no pueden saltar a otras máquinas.
+The isolation is not decorative. The box user **has no sudo, is not in the `docker` group,
+runs its own rootless daemon, and cannot read the host user's home** — not through
+permissions, not by mounting it in a container. The image ships no `ssh` and no `docker`
+either, so the agents inside cannot reach other machines.
 
 ---
 
-## Quién ejecuta qué
+## Who runs what
 
-Esto es lo primero que hay que tener claro: **intervienen tres identidades** y confundirlas
-es la causa de la mayoría de los errores raros.
+This is the first thing to get straight: **three identities are involved**, and confusing
+them causes most of the strange errors.
 
-| Identidad | Qué es | Qué corre | Privilegios |
+| Identity | What it is | Runs | Privileges |
 |---|---|---|---|
-| **vos** (`nromero`, uid 1000) | tu cuenta | `deploy.sh` | sudo, grupo `docker` |
-| **`agentic`** (uid 1001) | cuenta aislada del host | `run.sh`, `ctl.sh`, `diag.sh` | **ninguno** — sin sudo, sin grupo `docker`, con su propio daemon rootless |
-| **`agentic` adentro del contenedor** (uid 1001) | los agentes | `claude`, `omp`, `herdr` | ninguno; sin `ssh` ni `docker` en la imagen |
+| **you** (uid 1000) | your account | `deploy.sh` | sudo, `docker` group |
+| **the box user** — `agentic` by default (uid 1001) | isolated host account | `run.sh`, `ctl.sh`, `diag.sh` | **none** — no sudo, not in `docker`, its own rootless daemon |
+| **`agentic` inside the container** (uid 1001) | the agents | `claude`, `omp`, `herdr` | none; no `ssh` or `docker` in the image |
 
-El uid coincide a propósito entre el host y el contenedor: así los volúmenes conservan el
-dueño y el proceso de adentro puede escribir en ellos.
-
-```bash
-./deploy.sh                                              # como VOS (el script llama a sudo solo)
-sudo -u agentic -H bash /home/agentic/agentic-box/run.sh  # como AGENTIC
-```
-
-Tres reglas que se desprenden:
-
-- **`deploy.sh` va sin `sudo`.** Corriéndolo entero como root, `$HOME` pasa a ser `/root`,
-  busca los binarios en `/root/.local/bin` y falla con un error que no dice eso. El script
-  se planta si detecta que sos root.
-- **`run.sh` y `ctl.sh` van con `sudo -u agentic -H`.** El `-H` no es opcional: sin él
-  `$HOME` sigue siendo el tuyo y el archivo del token termina en `/home/nromero/.config`
-  en vez de `/home/agentic/.config`.
-- **`agentic` no puede leer `/home/nromero`**, ni por permisos, ni por sudo, ni montándolo
-  en un contenedor: el mapeo de usuarios de rootless lo impide, incluso con `--privileged`.
-  Eso es intencional. Lo que tenga que cruzar el límite, lo cruza `deploy.sh`.
-
-### El linger, que es lo más frágil de todo
+The uid matches between host and container on purpose: that way the volumes keep their
+ownership and the process inside can write to them.
 
 ```bash
-sudo loginctl enable-linger agentic     # una sola vez
-loginctl show-user agentic -p Linger    # tiene que decir Linger=yes
+./deploy.sh                                        # as YOU (the script calls sudo itself)
+sudo -u agentic -H bash ~agentic/agentic-box/run.sh  # as the BOX USER
 ```
 
-Sin linger, systemd mata la sesión de usuario de `agentic` cuando no queda ninguna sesión
-suya abierta — que es **siempre**, porque nadie hace login como `agentic`. Sin sesión no
-hay `dockerd`, sin `dockerd` no hay socket, y `run.sh` falla con "no encuentro el socket".
+Three rules follow:
 
-No da ningún síntoma hasta el primer reboot. `deploy.sh` lo chequea y avisa.
+- **`deploy.sh` runs without `sudo`.** Run the whole thing as root and `$HOME` becomes
+  `/root`, so it looks for the agent binaries in `/root/.local/bin` and fails with an error
+  that does not say so. The script refuses to run as root.
+- **`run.sh` and `ctl.sh` run with `sudo -u agentic -H`.** The `-H` is not optional:
+  without it `$HOME` is still yours and the token file ends up in your own `.config`
+  instead of the box user's.
+- **The box user cannot read your home**, by any route. That is intentional. Anything that
+  has to cross the boundary crosses through `deploy.sh`.
+
+Set `BOX_USER` to use a differently-named account. Paths are derived from `getent passwd`,
+never assumed to be `/home/<user>`.
+
+### Lingering, the most fragile part
+
+```bash
+sudo loginctl enable-linger agentic     # once
+loginctl show-user agentic -p Linger    # must say Linger=yes
+```
+
+Without lingering, systemd tears down the box user's session as soon as none of their
+sessions are open — which is **always**, because nobody logs in as that user. No session
+means no `dockerd`, no socket, and `run.sh` fails with "no rootless docker socket".
+
+It gives no symptom until the first reboot. `deploy.sh` checks it and warns.
 
 ---
 
-## Arrancar
+## Getting started
 
-Todo esto, **desde tu cuenta**:
+All of this **from your own account**:
 
 ```bash
 git clone git@github.com:nicoRomeroCuruchet/agentic-box.git
 cd agentic-box
 
 cp models.conf.example models.conf
-$EDITOR models.conf              # alias, URL e IP 100.x de cada modelo
+$EDITOR models.conf              # alias, URL and address of each model
 
-./deploy.sh --run                # copia a /home/agentic/ y levanta
+./deploy.sh --run                # copies to the box user's home and launches
 ```
 
-`deploy.sh` copia los binarios de los agentes desde tu `~/.local/bin` — **no están
-versionados**, porque `claude` pesa ~308 MB y GitHub rechaza archivos de más de 100 MB.
+`deploy.sh` copies the agent binaries from your `~/.local/bin` — **they are not
+versioned**, because the Claude Code binary is ~300 MB and GitHub rejects files over
+100 MB. As a side effect, the box always runs the same version you do.
 
-**Levantalo desde una terminal de verdad** (Konsole, Ghostty). herdr es un TUI de pantalla
-completa y necesita un TTY real; desde adentro de un agente se ve roto.
+**Launch it from a real terminal emulator.** herdr is a full-screen TUI and needs a real
+TTY; from inside an agent's shell it renders broken.
 
-### Operación
+### Operation
 
 ```bash
-sudo -u agentic -H bash /home/agentic/agentic-box/ctl.sh estado
-sudo -u agentic -H bash /home/agentic/agentic-box/ctl.sh attach
-sudo -u agentic -H bash /home/agentic/agentic-box/ctl.sh stop
-sudo -u agentic -H bash /home/agentic/agentic-box/diag.sh     # diagnostico del token
+sudo -u agentic -H bash ~agentic/agentic-box/ctl.sh status
+sudo -u agentic -H bash ~agentic/agentic-box/ctl.sh attach
+sudo -u agentic -H bash ~agentic/agentic-box/ctl.sh stop
+sudo -u agentic -H bash ~agentic/agentic-box/diag.sh     # token diagnostics
 ```
 
-`Ctrl+P` `Ctrl+Q` desengancha sin bajarla.
+`Ctrl+P` `Ctrl+Q` detaches without shutting it down.
 
 ---
 
-## Adentro: levantar modelos
+## Inside: launching models
 
-Esto lo corre Claude Code solo, pero también sirve a mano:
+Claude Code runs these itself, but they work by hand too:
 
 ```bash
-spawn-model --list          # qué hay y si está arriba
-spawn-model                 # el primero de models.conf
-spawn-model ornith-35b      # uno en particular
+spawn-model --list          # what exists and whether it is up
+spawn-model                 # the first entry in models.conf
+spawn-model ornith-35b      # a specific one
 close-model ornith-35b
 close-model --all
 ```
 
-Podés tener **varios modelos a la vez**, contra máquinas distintas.
+You can run **several models at once**, against different hosts.
 
-### Cómo funciona, y por qué así
+### How it works, and why this way
 
-Cada modelo vive en otra máquina, así que cada OMP necesita su propio
-`LLAMA_CPP_BASE_URL`. `herdr agent start` **no** acepta `--env`; `herdr pane split`
-**sí**. Entonces `spawn-model` le pone el entorno al pane y el agente lo hereda al
-arrancar ahí.
+Each model lives on a different host, so each OMP agent needs its own
+`LLAMA_CPP_BASE_URL`. `herdr agent start` does **not** accept `--env`; `herdr pane split`
+**does**. So `spawn-model` puts the environment on the pane and the agent inherits it when
+it starts there.
 
-Esa es toda la idea. Lo que reemplaza es el diseño anterior, donde la caja tenía un solo
-backend fijado con `-e LLAMA_CPP_BASE_URL` al crear el contenedor: cambiar de modelo
-obligaba a parar y recrear la caja, porque **las variables de entorno se fijan al crear el
-contenedor** y adjuntarse no las cambia.
+That is the whole idea. It replaces an earlier design where the box had a single backend
+pinned with `-e LLAMA_CPP_BASE_URL` at container creation: switching models meant stopping
+and recreating the box, because **environment variables are fixed when the container is
+created** and attaching does not change them.
 
-`models.conf` es el registro. La IP `100.x` de cada nodo no es opcional: adentro del
-contenedor no resuelve MagicDNS, porque el resolver de Docker no conoce la tailnet.
-`run.sh` arma un `--add-host` por entrada. El TLS igual valida, porque el certificado de
-`tailscale serve` es para ese mismo nombre.
-
----
-
-## El repo y el deployment son dos lugares
-
-```
-~/Documents/agentic-box     el repo — versionado, editable por vos
-/home/agentic/agentic-box   el deployment — otro usuario, 750, inaccesible desde tu cuenta
-```
-
-Esa separación **es** el aislamiento y no hay que arreglarla. `deploy.sh` es el único
-puente, y necesita `sudo` por eso. El repo manda: editás acá, desplegás allá.
-
-El estado vive en tres volúmenes nombrados — `agentic-claude` (login), `agentic-omp`
-(sesiones), `agentic-work` (workspace) — que sobreviven a `stop` y a `deploy.sh`. Solo
-`ctl.sh limpiar` los borra, y pregunta antes.
+`models.conf` is the registry. Each node's address is not optional: the container's
+resolver does not know your private network's DNS, so the hostname would not resolve
+inside. `run.sh` builds one `--add-host` per entry. TLS still validates, because the
+certificate is issued for that same name.
 
 ---
 
-## Autenticación: por token, nunca interactiva
+## The repo and the deployment are two places
 
-**El login OAuth adentro del contenedor no funciona.** El código tiene formato
-`codigo#estado` y hay que pegarlo en un TUI, dentro de un TTY de docker, dentro de un pane
-de herdr; el pegado se trunca y sale `OAuth error: Invalid code`. Se genera afuera:
+```
+this repo                  versioned, editable by you
+~agentic/agentic-box       the deployment: another user, mode 750, unreadable from your account
+```
+
+That separation **is** the isolation, and it is not something to fix. `deploy.sh` is the
+only bridge, which is why it needs sudo. The repo is authoritative: you edit here, you
+deploy there.
+
+State lives in three named volumes — `agentic-claude` (login), `agentic-omp` (sessions),
+`agentic-work` (workspace) — which survive `stop` and `deploy.sh`. Only `ctl.sh purge`
+removes them, and it asks first.
+
+---
+
+## Authentication: by token, never interactive
+
+**OAuth login inside the container does not work.** The code has the form `code#state` and
+has to be pasted into a TUI, inside a docker TTY, inside a herdr pane; the paste gets
+truncated and you get `OAuth error: Invalid code`. Generate it outside:
 
 ```bash
-claude setup-token                    # en una terminal normal, como vos
-read -rsp "Pega el token: " TOK && echo
+claude setup-token                    # in a normal terminal, as yourself
+read -rsp "Paste the token: " TOK && echo
 ( umask 077; printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$TOK" > /tmp/tok.env )
 unset TOK
-sudo -u agentic -H mkdir -p /home/agentic/.config
-sudo install -o agentic -g agentic -m 600 /tmp/tok.env /home/agentic/.config/agentic-box.env
+sudo -u agentic -H mkdir -p ~agentic/.config
+sudo install -o agentic -g agentic -m 600 /tmp/tok.env ~agentic/.config/agentic-box.env
 shred -u /tmp/tok.env
 ```
 
-`run.sh` lo levanta con `--env-file` y no con `-e`, para que el token no salga en `ps`.
+`run.sh` passes it with `--env-file` rather than `-e`, so the token never shows up in `ps`.
 
 ---
 
-## Trampas que ya costaron tiempo
+## Traps that already cost time
 
-- **No le pases el token a `sudo` por stdin.** Un `sudo ... <<< "TOKEN=..."` hace que
-  `sudo` se coma el token como intento de contraseña y el archivo quede vacío.
-- **`claude auth status` NO valida el token.** Devuelve `loggedIn: true` con cualquier
-  cosa; solo mira si la variable existe. La única prueba real es una llamada:
-  `claude -p "responde solo: OK"`. `diag.sh` ya la hace.
-- **Las variables se fijan al CREAR el contenedor.** Si hay uno corriendo sin token,
-  adjuntarse no se lo agrega y relanzar el script no cambia nada — hay que `ctl.sh stop` y
-  recrear. `run.sh` detecta este caso y se planta en vez de engancharte en silencio.
-- **Todo directorio montado como volumen tiene que existir en la imagen.** Docker, al
-  estrenar un volumen nombrado sobre una ruta inexistente, la crea vacía **como root**, y
-  el proceso de adentro (uid 1001) no puede escribir. Pasó con `~/.claude`.
-- **Un volumen nombrado ya existente no se re-siembra desde la imagen.** El `CLAUDE.md`
-  del workspace quedaba congelado en la versión del primer build. Por eso hay una segunda
-  copia fuera del volumen y el entrypoint refresca desde ahí.
-- **`HERDR_SESSION` es imprescindible.** Con sesión nombrada herdr pone su socket en
-  `~/.config/herdr/sessions/<nombre>/`, pero la CLI busca en `~/.config/herdr/herdr.sock`
-  y responde `server_not_running`.
-- **`herdr agent read` necesita `--source visible`.** El default (`recent`) suele volver
-  vacío, y parece que el agente se colgó.
-- **Base Ubuntu 26.04 a propósito.** Los binarios se copian del host, que es 26.04; con
-  una base más vieja el glibc no alcanza y `omp`/`claude` no arrancan.
+- **Do not pipe the token into `sudo` on stdin.** `sudo ... <<< "TOKEN=..."` makes sudo
+  swallow the token as a password attempt and leaves the file empty.
+- **`claude auth status` does NOT validate the token.** It returns `loggedIn: true` for any
+  non-empty value; it only checks that the variable exists. The only real test is a call:
+  `claude -p "reply with only: OK"`. `diag.sh` does exactly that.
+- **Environment variables are fixed when the container is CREATED.** If one is running
+  without the token, attaching will not add it and re-running the script changes nothing —
+  it needs `ctl.sh stop` and a recreate. `run.sh` detects this and stops instead of
+  silently attaching you.
+- **Every directory mounted as a volume must exist in the image.** When Docker seeds a
+  named volume over a non-existent path it creates the directory empty **as root**, and the
+  process inside (uid 1001) cannot write. This happened with `~/.claude`.
+- **An existing named volume is never re-seeded from the image.** The workspace's
+  `CLAUDE.md` used to freeze at the first build's version. Hence the second copy outside the
+  volume, which the entrypoint refreshes from.
+- **`HERDR_SESSION` is essential.** With a named session herdr puts its socket in
+  `~/.config/herdr/sessions/<name>/`, but the CLI looks in `~/.config/herdr/herdr.sock` and
+  answers `server_not_running`.
+- **`herdr agent read` needs `--source visible`.** The default (`recent`) usually comes back
+  empty, which looks like a hung agent.
+- **herdr titles panes after their `cwd`.** Everything would be called `workspace` without
+  an explicit `herdr pane rename` after creating the pane.
+- **The base image release must match the host's.** The agent binaries are copied from the
+  host; on an older base the glibc is too old and they will not start.

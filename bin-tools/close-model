@@ -1,15 +1,15 @@
 #!/bin/bash
-# Baja un agente OMP y cierra su pane.
+# Shut down an OMP agent and close its pane.
 #
 #   close-model ornith-35b
 #   close-model --all
 #
-# Cerrar el pane termina el proceso de OMP. La sesion de OMP en si vive en el
-# volumen agentic-omp y sobrevive, asi que volver a levantarlo con spawn-model
-# no empieza de cero.
+# Closing the pane terminates the OMP process. The OMP session itself lives in
+# the agentic-omp volume and survives, so bringing it back with spawn-model does
+# not start from scratch.
 set -uo pipefail
 
-nombres() {
+names() {
     herdr agent list 2>/dev/null \
         | python3 -c 'import json,sys
 d=json.load(sys.stdin)
@@ -18,40 +18,40 @@ for a in d["result"]["agents"]:
         print(a["name"], a["pane_id"])' 2>/dev/null
 }
 
-cerrar() {
-    local nombre="$1" pane="$2"
+close_one() {
+    local name="$1" pane="$2"
     if herdr pane close "$pane" >/dev/null 2>&1; then
-        echo "cerrado: $nombre (pane $pane)"
+        echo "closed: $name (pane $pane)"
     else
-        echo "ERROR: no pude cerrar el pane $pane de $nombre" >&2
+        echo "ERROR: could not close pane $pane for $name" >&2
         return 1
     fi
 }
 
 case "${1:-}" in
     --all|-a)
-        encontrado=0
-        while read -r nombre pane; do
-            [ -n "$nombre" ] || continue
-            cerrar "$nombre" "$pane"
-            encontrado=1
-        done < <(nombres)
-        [ "$encontrado" = 1 ] || echo "no habia ningun agente OMP levantado"
+        found=0
+        while read -r name pane; do
+            [ -n "$name" ] || continue
+            close_one "$name" "$pane"
+            found=1
+        done < <(names)
+        [ "$found" = 1 ] || echo "no OMP agents were running"
         ;;
     ""|-h|--help)
-        echo "uso: close-model <alias> | --all"
+        echo "usage: close-model <alias> | --all"
         echo
-        echo "levantados ahora:"
-        nombres | awk '{print "  " $1 "  (pane " $2 ")"}' || echo "  (ninguno)"
+        echo "running now:"
+        names | awk '{print "  " $1 "  (pane " $2 ")"}' || echo "  (none)"
         ;;
     *)
-        PANE=$(nombres | awk -v n="$1" '$1 == n {print $2}')
+        PANE=$(names | awk -v n="$1" '$1 == n {print $2}')
         if [ -z "$PANE" ]; then
-            echo "ERROR: no hay ningun agente OMP llamado '$1'." >&2
-            echo "levantados ahora:" >&2
-            nombres | awk '{print "  " $1}' >&2
+            echo "ERROR: no OMP agent named '$1'." >&2
+            echo "running now:" >&2
+            names | awk '{print "  " $1}' >&2
             exit 1
         fi
-        cerrar "$1" "$PANE"
+        close_one "$1" "$PANE"
         ;;
 esac

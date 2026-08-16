@@ -1,141 +1,160 @@
 # CLAUDE.md
 
-Guía para Claude Code trabajando **en este repositorio**.
+Guidance for Claude Code working **in this repository**.
 
-Ojo con la ambigüedad: hay dos `CLAUDE.md` acá y son para dos audiencias distintas.
+Watch the ambiguity: there are two `CLAUDE.md` files here, for two different audiences.
 
 | | |
 |---|---|
-| `CLAUDE.md` (este) | para vos, si estás editando el repo desde el host |
-| `workspace/CLAUDE.md` | va **adentro** de la imagen; lo lee el Claude Code que corre en la caja |
+| `CLAUDE.md` (this one) | for you, editing the repo from the host |
+| `workspace/CLAUDE.md` | goes **inside** the image; read by the Claude Code running in the box |
 
-Si te piden "cambiar las instrucciones del agente", casi siempre es el segundo.
+If someone asks to "change the agent's instructions", it is almost always the second.
 
-## Qué es esto
+## What this is
 
-Un contenedor Docker rootless donde Claude Code orquesta agentes OMP contra servidores
-llama.cpp de la tailnet. No hay código de aplicación: es un Dockerfile, cuatro scripts de
-operación, dos herramientas que van adentro de la imagen y la documentación.
+A rootless Docker container where Claude Code orchestrates OMP agents against llama.cpp
+servers on a private network. There is no application code: a Dockerfile, four operational
+shell scripts, two tools that ship inside the image, and the documentation.
 
-Los servidores de modelos son otro repo,
-[llamacpp-compose](https://github.com/nicoRomeroCuruchet/llamacpp-compose). **Este depende
-de aquel**: si un modelo no responde, el problema casi siempre está del otro lado.
+**The model servers are a separate project.** This one depends on it: if a model does not
+respond, the problem is almost always on that side.
+
+- [llamacpp-compose](https://github.com/nicoRomeroCuruchet/llamacpp-compose) — the
+  `docker compose` setup that serves each GGUF model over an OpenAI-compatible API, plus
+  the measurements behind the tuning. Anything exposing `/health` and `/v1/models` in that
+  format works here.
 
 ## Layout
 
 ```
-Dockerfile                 la imagen
-entrypoint.sh              arranca herdr con UN pane (Claude Code) y nada mas
-run.sh                     build + run; lee models.conf y arma los --add-host
-ctl.sh                     estado | stop | attach | logs | limpiar
-diag.sh                    diagnostico del token de Claude Code
-deploy.sh                  copia el repo a /home/agentic/agentic-box (el unico puente)
-models.conf                registro de modelos — GITIGNOREADO, tiene la tailnet
-models.conf.example        la referencia versionada
-bin-tools/spawn-model      levanta un OMP en un pane nuevo con su propia URL
-bin-tools/close-model      lo baja y cierra el pane
-bin/                       binarios de claude/omp/herdr — GITIGNOREADO, ~500 MB
-workspace/CLAUDE.md        instrucciones para el agente de adentro
-README.md                  documentacion completa
+Dockerfile                 the image
+entrypoint.sh              starts herdr with ONE pane (Claude Code) and nothing else
+run.sh                     build + run; reads models.conf and builds the --add-host flags
+ctl.sh                     status | stop | attach | logs | purge
+diag.sh                    diagnose the Claude Code token
+deploy.sh                  copies the repo to the box user's home (the only bridge)
+models.conf                model registry — GITIGNORED, holds hostnames and addresses
+models.conf.example        the versioned reference
+bin-tools/spawn-model      starts an OMP agent in a new pane with its own URL
+bin-tools/close-model      shuts it down and closes the pane
+bin/                       claude/omp/herdr binaries — GITIGNORED, ~500 MB
+workspace/CLAUDE.md        instructions for the agent inside the box
+README.md                  full documentation
 ```
 
-## Las tres identidades
+## The three identities
 
-Antes de sugerir cualquier comando, resolvé **como quién se corre**. Es la causa más común
-de errores acá.
+Before suggesting any command, work out **who runs it**. This is the most common source of
+errors here.
 
-| Identidad | Corre | Privilegios |
+| Identity | Runs | Privileges |
 |---|---|---|
-| el usuario (uid 1000) | `deploy.sh` | sudo, grupo `docker` |
-| `agentic` (uid 1001) | `run.sh`, `ctl.sh`, `diag.sh` | ninguno: sin sudo, sin grupo `docker`, daemon rootless propio |
-| `agentic` en el contenedor | `claude`, `omp`, `herdr` | ninguno; la imagen no trae `ssh` ni `docker` |
+| the host user (uid 1000) | `deploy.sh` | sudo, `docker` group |
+| the box user, `agentic` by default (uid 1001) | `run.sh`, `ctl.sh`, `diag.sh` | none: no sudo, not in `docker`, its own rootless daemon |
+| `agentic` inside the container | `claude`, `omp`, `herdr` | none; the image has no `ssh` and no `docker` |
 
-- `deploy.sh` **sin** `sudo` — llama a sudo por dentro. Con `sudo ./deploy.sh`, `$HOME` es
-  `/root` y busca los binarios donde no están. El script se planta si sos root.
-- `run.sh` / `ctl.sh` / `diag.sh` **con** `sudo -u agentic -H`. El `-H` es obligatorio: sin
-  él `$HOME` sigue siendo el del usuario y el token termina en el `.config` equivocado.
-- **`agentic` no puede leer el home del usuario** por ningún camino, y es intencional. No
-  propongas `chmod`, ni bind mounts, ni `--privileged` para saltearlo.
+- `deploy.sh` runs **without** `sudo` — it calls sudo internally. With `sudo ./deploy.sh`,
+  `$HOME` becomes `/root` and the binaries are looked up where they are not. The script
+  refuses to run as root.
+- `run.sh` / `ctl.sh` / `diag.sh` run **with** `sudo -u <box-user> -H`. The `-H` is
+  mandatory: without it `$HOME` stays the host user's and the token file lands in the wrong
+  `.config`.
+- **The box user cannot read the host user's home** by any route, and that is intentional.
+  Do not propose `chmod`, bind mounts or `--privileged` to work around it.
 
-**`loginctl enable-linger agentic` es obligatorio y no es obvio.** Sin linger, systemd baja
-la sesión de usuario de `agentic` (nadie hace login como él), y con ella el `dockerd`
-rootless. Síntoma: `run.sh` dice "no encuentro el socket", pero recién después de un
-reboot. `deploy.sh` lo chequea y avisa.
+**`loginctl enable-linger <box-user>` is mandatory and not obvious.** Without lingering,
+systemd tears down that user's session (nobody ever logs in as them) and the rootless
+`dockerd` goes with it. Symptom: `run.sh` reports a missing socket — but only after a
+reboot. `deploy.sh` checks it and warns.
 
-## Reglas
+## Rules
 
-**El repo y el deployment son dos lugares distintos, a propósito.** El código corre en
-`/home/agentic/agentic-box`, que está en 750 y **no podés leer desde tu cuenta**. Eso es el
-aislamiento de la caja: no lo "arregles" con un `chmod`. Para ver qué hay desplegado, o
-para desplegar, se pasa por `deploy.sh`, que usa `sudo`.
+**Everything in this repo is written in English** — code, comments, documentation and
+commit messages. Reply to the repo owner in their language, but do not let it into the
+files.
 
-**`bin/` no se versiona.** `claude` pesa ~308 MB y `omp` ~170, y GitHub rechaza archivos de
-más de 100 MB. `deploy.sh` los copia desde `~/.local/bin` del host en cada deploy. Si
-proponés versionarlos, el push va a fallar.
-
-**`models.conf` no se versiona.** Tiene el nombre de la tailnet y las IPs `100.x`. Toda
-variable nueva se espeja en `models.conf.example` con su comentario, o nadie más puede
-reproducir el setup.
-
-**El idioma del repo es español rioplatense**, incluidos comentarios y mensajes de commit.
-Es distinto de `llamacpp-compose`, que es todo en inglés. No los mezcles.
-
-**No borres volúmenes.** `agentic-claude` tiene el login, `agentic-omp` las sesiones,
-`agentic-work` el workspace. `ctl.sh limpiar` es lo único destructivo y pregunta antes.
-Un `docker volume rm` a mano pierde el login y hay que rehacer el token.
-
-**Levantar la caja necesita un TTY real.** herdr es un TUI de pantalla completa: no
-funciona desde el `!` de Claude Code ni desde un subproceso. Pedile al usuario que la
-levante desde Konsole o Ghostty.
-
-## Verificar un cambio
-
-Que `docker build` termine bien no dice casi nada: la imagen puede construir y la caja
-arrancar sin modelo, sin token o con el `CLAUDE.md` viejo.
+**No hardcoded paths or personal identifiers.** Derive them:
 
 ```bash
-bash -n entrypoint.sh run.sh ctl.sh deploy.sh bin-tools/*   # sintaxis
-./deploy.sh                                                 # sin --run, solo copia
-sudo -u agentic -H bash /home/agentic/agentic-box/diag.sh   # el token de verdad
+BOX_USER="${BOX_USER:-agentic}"
+BOX_HOME="$(getent passwd "$BOX_USER" | cut -d: -f6)"   # not /home/$BOX_USER
+BOX_USER="$(stat -c %U "$0")"                           # inside the deployed scripts
 ```
 
-Y adentro de la caja, lo que confirma que el diseño funciona:
+Hostnames, IP addresses and network names belong in `models.conf`, which is gitignored.
+The versioned reference is `models.conf.example`, with placeholders.
+
+**Paths inside the container are a different case and must stay literal.** The Dockerfile
+creates a user named `agentic` with home `/home/agentic`, so `/home/agentic/workspace`,
+`/home/agentic/.claude` and the volume mount targets in `run.sh` are that image's own
+layout, not the host's. Deriving them would be wrong: they have nothing to do with which
+account runs the box. `BOX_USER` parameterises the **host** side only.
+
+**The repo and the deployment are two different places, on purpose.** The code runs in the
+box user's home, which is mode 750 and **unreadable from your account**. That is the
+isolation of the box: do not "fix" it with a `chmod`. Everything crosses through
+`deploy.sh`, which uses sudo.
+
+**`bin/` is not versioned.** The Claude Code binary is ~300 MB and omp ~170, and GitHub
+rejects anything over 100 MB. `deploy.sh` copies them from the host's `~/.local/bin` on
+every deploy. Proposing to version them means a failed push.
+
+**Do not delete volumes.** `agentic-claude` holds the login, `agentic-omp` the sessions,
+`agentic-work` the workspace. `ctl.sh purge` is the only destructive command and it asks
+first. A manual `docker volume rm` loses the login and the token has to be re-issued.
+
+**Launching the box needs a real TTY.** herdr is a full-screen TUI: it does not work from
+a subprocess or from an agent's shell. Ask the user to launch it from a terminal emulator.
+
+## Verifying a change
+
+`docker build` succeeding says almost nothing: the image can build and the box can start
+with no model, no token, or a stale `CLAUDE.md`.
 
 ```bash
-spawn-model --list        # tiene que decir el estado real de cada server
-spawn-model <alias>       # tiene que crear el pane Y arrancar OMP ahi
+bash -n entrypoint.sh run.sh ctl.sh deploy.sh bin-tools/*   # syntax
+./deploy.sh                                                 # no --run: copy only
+sudo -u agentic -H bash ~agentic/agentic-box/diag.sh        # the token, for real
 ```
 
-## Trampas
+And inside the box, what actually confirms the design works:
 
-- **herdr titula los panes con el basename del `cwd`.** Como el `WORKDIR` de la imagen es
-  `/home/agentic/workspace`, sin intervencion TODOS los panes se llaman `workspace` y no se
-  distinguen en pantalla. No hay clave de config para el titulo (`herdr config` solo tiene
-  `check` y `reset-keys`) ni flag en `pane split`: se arregla con
-  `herdr pane rename <PANE_ID> <LABEL>` despues de crear el pane. `spawn-model` y
-  `entrypoint.sh` ya lo hacen.
-- **Las variables de entorno se fijan al CREAR el contenedor.** Adjuntarse a uno que ya
-  corre no cambia ninguna. Si algo depende de una variable nueva, hay que `ctl.sh stop` y
-  recrear — no alcanza con relanzar `run.sh`.
-- **`herdr agent start` no acepta `--env`; `herdr pane split` sí.** De ahí sale todo el
-  diseño de `spawn-model`. Si alguna vez parece más simple arrancar el agente y después
-  configurarlo, no lo es: no hay dónde poner la variable.
-- **Un volumen nombrado solo se siembra desde la imagen cuando se estrena vacío.** Por eso
-  `workspace/CLAUDE.md` se copia dos veces en el Dockerfile y el entrypoint refresca desde
-  la copia de afuera. Si sacás esa segunda copia, el agente vuelve a leer instrucciones
-  viejas sin que nada avise.
-- **`sh` no expande llaves.** `sudo sh -c 'cp a{1,2} dst'` copia cero archivos y sale bien.
-  Usá `bash -c` o lista explícita.
-- **Los globs los expande el shell que los escribe, no el que los ejecuta.** Este es el
-  mismo error que el anterior, generalizado, y acá muerde seguido porque hay un límite de
-  privilegios en el medio:
+```bash
+spawn-model --list        # must report each server's real state
+spawn-model <alias>       # must create the pane AND start OMP in it
+```
+
+## Traps
+
+- **herdr titles panes after the basename of their `cwd`.** Since the image's `WORKDIR` is
+  `/home/agentic/workspace`, without intervention EVERY pane is called `workspace` and they
+  cannot be told apart on screen. There is no config key for the title (`herdr config` only
+  offers `check` and `reset-keys`) and no flag on `pane split`: fix it with
+  `herdr pane rename <PANE_ID> <LABEL>` after creating the pane. `spawn-model` and
+  `entrypoint.sh` already do.
+- **Environment variables are fixed when the container is CREATED.** Attaching to a running
+  one changes none of them. If something depends on a new variable, it needs `ctl.sh stop`
+  and a recreate — re-running `run.sh` is not enough.
+- **`herdr agent start` does not accept `--env`; `herdr pane split` does.** The whole
+  `spawn-model` design follows from that. If starting the agent first and configuring it
+  afterwards ever looks simpler, it is not: there is nowhere to put the variable.
+- **A named volume is only seeded from the image when it is brand new and empty.** That is
+  why `workspace/CLAUDE.md` is copied twice in the Dockerfile and the entrypoint refreshes
+  from the outside copy. Remove that second copy and the agent silently goes back to stale
+  instructions.
+- **`sh` does not expand braces.** `sudo sh -c 'cp a{1,2} dst'` copies nothing and exits 0.
+  Use `bash -c` or an explicit list.
+- **Globs are expanded by the shell that writes them, not the one that executes them.**
+  Same bug generalised, and it bites often here because there is a privilege boundary in
+  the middle:
 
   ```bash
-  sudo chmod +x /home/agentic/agentic-box/*.sh          # MAL
-  sudo bash -c 'chmod +x /home/agentic/agentic-box/*.sh' # BIEN
+  sudo chmod +x /home/agentic/agentic-box/*.sh           # WRONG
+  sudo bash -c 'chmod +x /home/agentic/agentic-box/*.sh' # RIGHT
   ```
 
-  El primero lo expande tu shell, que no puede leer `/home/agentic` (750): no matchea
-  nada, pasa el literal, y `chmod` se queja de un archivo llamado `*.sh`. Con `set -e` eso
-  aborta el script. **Regla: si la ruta está del otro lado del límite de permisos, el glob
-  va adentro de `sudo bash -c`.**
+  The first is expanded by your shell, which cannot read the box user's home: it matches
+  nothing, passes the literal through, and `chmod` complains about a file named `*.sh`.
+  Under `set -e` that aborts the script. **Rule: if the path is on the far side of the
+  permission boundary, the glob goes inside `sudo bash -c`.**

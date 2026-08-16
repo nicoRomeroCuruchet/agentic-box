@@ -1,109 +1,102 @@
-# Caja `agentic`
+# The agentic box
 
-Corres dentro de un contenedor Docker rootless, como usuario `agentic`. Es una caja
-aislada a proposito: **no tenes acceso al home de `nromero` ni a sus credenciales**, y
-no deberias intentar conseguirlo. Tampoco tenes `ssh` ni `docker` adentro.
+You are running inside a rootless Docker container, as an unprivileged user. The box is
+isolated on purpose: **you have no access to the host user's home directory or their
+credentials**, and you should not try to get it. There is no `ssh` and no `docker` in here
+either.
 
-Estas en un pane de `herdr`, y al arrancar sos **el unico**. Los agentes de modelo se
-levantan a pedido — vos podes levantarlos.
+You are in a `herdr` pane, and at startup you are **the only one**. Model agents are
+launched on demand — you can launch them.
 
-## Levantar un modelo local
+## Launching a local model
 
 ```bash
-spawn-model --list          # que hay y si esta arriba
-spawn-model                 # el primero del registro
-spawn-model ornith-35b      # uno en particular
-close-model ornith-35b      # bajarlo y cerrar su pane
+spawn-model --list          # what exists and whether it is up
+spawn-model                 # the first one in the registry
+spawn-model ornith-35b      # a specific one
+close-model ornith-35b      # shut it down and close its pane
 close-model --all
 ```
 
-`spawn-model` parte un pane nuevo a la derecha, le pone el `LLAMA_CPP_BASE_URL` del
-modelo que corresponda y arranca un OMP ahi. **Podes tener varios a la vez**, cada uno
-contra una maquina distinta de la tailnet.
+`spawn-model` splits a new pane to the right, gives it the `LLAMA_CPP_BASE_URL` for that
+model, and starts an OMP agent there. **You can have several at once**, each against a
+different host.
 
-Antes de partir el pane chequea `/health` del server. Si falla, te lo dice y no crea
-nada — **no intentes levantar el server vos**, corre en otra maquina a la que no tenes
-acceso. Avisale al usuario.
+It checks the server's `/health` before splitting. If that fails it tells you and creates
+nothing — **do not try to start the server yourself**, it runs on another machine you have
+no access to. Tell the user.
 
-El nombre del agente en herdr es el alias del modelo (`qwen38-27b`, `ornith-35b`).
+The agent's name in herdr is the model's alias, and so is the pane title.
 
-## Manejar un agente ya levantado
+## Driving an agent that is already up
 
 ```bash
-herdr agent list                                          # agentes y estado
-herdr agent prompt qwen38-27b "tu consigna aca"
+herdr agent list                                          # agents and state
+herdr agent prompt qwen38-27b "your instruction here"
 herdr agent read   qwen38-27b --source visible --lines 60
-herdr agent send-keys qwen38-27b Escape                   # input crudo
+herdr agent send-keys qwen38-27b Escape                   # raw input
 ```
 
-**El target es el nombre, no el kind.** `agent list` muestra las dos cosas: `name` es
-`qwen38-27b`, `agent` es `omp`. Si usas `omp` te contesta `agent_not_found`.
+**The target is the name, not the kind.** `agent list` shows both: `name` is `qwen38-27b`,
+`agent` is `omp`. Using `omp` gets you `agent_not_found`.
 
-**`--source visible` no es opcional en la practica.** El default (`recent`) suele volver
-vacio. Si `read` no devuelve nada, es casi siempre esto y no que OMP se haya colgado.
+**`--source visible` is not optional in practice.** The default (`recent`) usually comes
+back empty. If `read` returns nothing, that is almost always why — not OMP hanging.
 
-**Cuidado con la carrera del `wait`.** Justo despues del `prompt`, OMP todavia figura
-`idle`, asi que un `wait --until idle` puede volver al instante con la respuesta anterior.
-La deteccion del estado `working` tampoco es confiable para respuestas rapidas. Lo robusto
-es leer hasta que la salida deje de cambiar:
+**Watch out for the `wait` race.** Right after `prompt`, OMP still reports `idle`, so a
+`wait --until idle` can return instantly with the previous answer. Detecting the `working`
+state is not reliable for fast replies either. The robust approach is to read until the
+output stops changing:
 
 ```bash
-herdr agent prompt qwen38-27b "$CONSIGNA"
-prev=""; estable=0
+herdr agent prompt qwen38-27b "$INSTRUCTION"
+prev=""; stable=0
 for i in $(seq 1 60); do
     sleep 3
     cur=$(herdr agent read qwen38-27b --source visible --lines 60)
     if [ "$cur" = "$prev" ]; then
-        estable=$((estable+1))
-        [ "$estable" -ge 2 ] && break     # dos lecturas iguales = termino
+        stable=$((stable+1))
+        [ "$stable" -ge 2 ] && break     # two identical reads = finished
     else
-        estable=0
+        stable=0
     fi
     prev="$cur"
 done
 printf '%s\n' "$cur"
 ```
 
-La respuesta aparece en el pane como texto plano, arriba de la barra de estado. El
-razonamiento del modelo sale como una linea mas antes de la respuesta final.
+The answer appears in the pane as plain text, above the status bar. The model's reasoning
+comes out as an extra line before the final answer.
 
-## Que conviene delegarles
+## What to delegate
 
-Son modelos locales: **no cuestan tokens de API y no salen de la tailnet**. Uselos para
-volumen y para cosas que no querrias mandar a un servicio externo — leer y resumir
-archivos largos, primeras pasadas de refactor, generar tests repetitivos, clasificar. El
-juicio fino, la arquitectura y la revision final quedan de tu lado.
+These are local models: **they cost no API tokens and the data never leaves the private
+network**. Use them for volume, and for anything you would not want to send to an external
+service — reading and summarising long files, first-pass refactors, generating repetitive
+tests, classification. Fine judgement, architecture and final review stay with you.
 
-Cual elegir, si hay mas de uno disponible:
+Which one, when more than one is available: run `spawn-model --list` and check the
+registry. As a rule, a Mixture-of-Experts model reads only its active experts per token, so
+it decodes considerably faster than its file size suggests; a dense model of similar size
+will be slower but is not otherwise worse.
 
-| | |
-|---|---|
-| `qwen38-27b` | denso, 65.536 tokens de contexto, ~63 t/s medidos. El default razonable. |
-| `ornith-35b` | MoE, 131.072 de contexto, ~148 t/s medidos. Mas rapido y con mas ventana: conviene para volumen y archivos grandes. |
+Two things that hold for all of them:
 
-Esos numeros salen de mediciones reales sobre los deployments, no de las fichas de los
-modelos.
+- **They run with `--reasoning-format deepseek`.** Reasoning goes to a separate field, so
+  with a small token budget the visible answer can come back empty. That is not a failure.
+- **Long context costs prefill**, which is seconds before the first token. Sending a whole
+  file when a single function would have done is paid in latency.
 
-Dos cosas que valen para los dos:
-
-- **Corren con `--reasoning-format deepseek`.** El razonamiento va a un campo aparte; si
-  le das poco margen de tokens, la respuesta visible puede venir vacia. No es que este
-  roto.
-- **Pasarles contexto largo cuesta prefill**, que son segundos antes del primer token.
-  Mandar el archivo entero cuando alcanzaba con una funcion se paga en latencia.
-
-## Si un modelo no responde
+## If a model does not respond
 
 ```bash
-spawn-model --list      # dice cual esta arriba y cual no
+spawn-model --list      # tells you which ones are up
 ```
 
-Los servers corren en otras maquinas de la tailnet y **se levantan desde el host, no
-desde aca**. Vos no tenes la llave. Pediselo al usuario; el comando del lado de el es:
+The servers run on other machines and **are started from the host, not from here**. You do
+not have the key. Ask the user. They are llama.cpp instances; the setup used here is
+[llamacpp-compose](https://github.com/nicoRomeroCuruchet/llamacpp-compose), where the
+command on their side is `./scripts/serve.sh up`.
 
-```bash
-ssh <nodo> 'cd ~/llm-server && ./scripts/serve.sh up'
-```
-
-Son maquinas compartidas y cada modelo ocupa casi toda una placa, asi que no des por
-sentado que puede levantarlo en el momento.
+Those machines may be shared, and each model can occupy nearly a whole GPU, so do not
+assume the user can bring one up on the spot.

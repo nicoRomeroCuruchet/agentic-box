@@ -1,35 +1,38 @@
 #!/bin/bash
-# Control de la caja `agentic` sin tener que tipear el DOCKER_HOST cada vez.
+# Control the box without typing DOCKER_HOST every time.
 #
-#   sudo -u agentic -H bash /tmp/agentic-box/ctl.sh <estado|stop|attach|logs|limpiar>
+#   sudo -u agentic -H bash ~/agentic-box/ctl.sh <status|stop|attach|logs|purge>
 #
-# `stop` no borra nada persistente: el contenedor corre con --rm, pero el login de
-# Claude Code, las sesiones de OMP y el workspace viven en volumenes nombrados y
-# sobreviven. Para borrarlos hace falta `limpiar`, que pregunta antes.
+# `stop` destroys nothing persistent: the container runs with --rm, but the
+# Claude Code login, the OMP sessions and the workspace live in named volumes and
+# survive. Removing those takes `purge`, which asks first.
 set -uo pipefail
 
-if [ "$(id -un)" != "agentic" ]; then
-    echo "ERROR: esto va como agentic, no como $(id -un)." >&2
-    echo "       sudo -u agentic -H bash /tmp/agentic-box/ctl.sh $*" >&2
+# The box user is whoever owns this deployment — derived, not assumed.
+BOX_USER="$(stat -c %U "$0")"
+
+if [ "$(id -un)" != "$BOX_USER" ]; then
+    echo "ERROR: this runs as $BOX_USER, not as $(id -un)." >&2
+    echo "       sudo -u $BOX_USER -H bash $0 $*" >&2
     exit 1
 fi
 
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 IMG=agentic-box
 
-case "${1:-estado}" in
-    estado)
-        echo "== contenedor =="
+case "${1:-status}" in
+    status)
+        echo "== container =="
         docker ps --filter "name=$IMG" --format 'table {{.Names}}\t{{.Status}}' || true
-        docker ps -q --filter "name=$IMG" | grep -q . || echo "(no esta corriendo)"
-        echo "== volumenes persistentes =="
+        docker ps -q --filter "name=$IMG" | grep -q . || echo "(not running)"
+        echo "== persistent volumes =="
         docker volume ls --filter name=agentic- --format 'table {{.Name}}\t{{.Driver}}'
         ;;
     stop)
         if docker ps -q --filter "name=$IMG" | grep -q .; then
-            docker stop -t 10 "$IMG" && echo "detenido (los volumenes quedan intactos)"
+            docker stop -t 10 "$IMG" && echo "stopped (volumes left untouched)"
         else
-            echo "no estaba corriendo"
+            echo "was not running"
         fi
         ;;
     attach)
@@ -38,15 +41,17 @@ case "${1:-estado}" in
     logs)
         docker logs --tail "${2:-50}" "$IMG"
         ;;
-    limpiar)
-        echo "Esto BORRA el login de Claude Code, las sesiones de OMP y el workspace."
-        read -rp "Escribi 'si' para confirmar: " r
-        [ "$r" = "si" ] || { echo "cancelado"; exit 0; }
+    purge)
+        echo "This DELETES the Claude Code login, the OMP sessions and the workspace."
+        echo "The token itself is not here — it stays in ~/.config/agentic-box.env —"
+        echo "but the login state inside the container is lost."
+        read -rp "Type 'yes' to confirm: " r
+        [ "$r" = "yes" ] || { echo "cancelled"; exit 0; }
         docker rm -f "$IMG" 2>/dev/null
         docker volume rm agentic-work agentic-claude agentic-omp
         ;;
     *)
-        echo "uso: ctl.sh <estado|stop|attach|logs [N]|limpiar>" >&2
+        echo "usage: ctl.sh <status|stop|attach|logs [N]|purge>" >&2
         exit 1
         ;;
 esac

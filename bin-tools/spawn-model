@@ -1,44 +1,44 @@
 #!/bin/bash
-# Levanta un agente OMP contra un modelo local, en un pane nuevo.
+# Launch an OMP agent against a local model, in a new pane.
 #
-#   spawn-model                 el primero de models.conf
-#   spawn-model ornith-35b      uno en particular
-#   spawn-model --list          que hay disponible
+#   spawn-model                 the first entry in models.conf
+#   spawn-model ornith-35b      a specific one
+#   spawn-model --list          what is available
 #
-# Pensado para que lo llame Claude Code desde adentro de la caja: el usuario no
-# tiene que tocar nada ni copiar entre panes.
+# Meant to be called by Claude Code from inside the box: the user never has to
+# touch the other pane or copy anything between them.
 #
-# Por que un pane nuevo y no `agent start` a secas: cada modelo vive en una
-# maquina distinta de la tailnet, asi que cada OMP necesita su propio
-# LLAMA_CPP_BASE_URL. `herdr agent start` NO acepta --env; `herdr pane split` si.
-# Entonces el entorno se le pone al pane y el agente lo hereda al arrancar ahi.
+# Why a new pane rather than just `agent start`: each model lives on a different
+# host, so each OMP agent needs its own LLAMA_CPP_BASE_URL. `herdr agent start`
+# does NOT accept --env; `herdr pane split` does. So the environment goes on the
+# pane and the agent inherits it when it starts there.
 set -uo pipefail
 
-REGISTRO="${MODELS_CONF:-/usr/local/share/agentic-box/models.conf}"
+REGISTRY="${MODELS_CONF:-/usr/local/share/agentic-box/models.conf}"
 
-if [ ! -f "$REGISTRO" ]; then
-    echo "ERROR: no encuentro el registro de modelos en $REGISTRO" >&2
+if [ ! -f "$REGISTRY" ]; then
+    echo "ERROR: model registry not found at $REGISTRY" >&2
     exit 1
 fi
 
-# alias base_url ip, ignorando comentarios y lineas vacias
-lineas() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRO"; }
+# alias base_url ip, skipping comments and blank lines
+entries() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRY"; }
 
-listar() {
-    printf '%-14s %-42s %s\n' ALIAS URL ESTADO
+list() {
+    printf '%-14s %-42s %s\n' ALIAS URL STATUS
     while read -r alias url _ip; do
         if curl -sf -m 5 "$url/health" >/dev/null 2>&1; then
-            estado="arriba"
+            status="up"
         else
-            estado="NO RESPONDE"
+            status="NOT RESPONDING"
         fi
-        printf '%-14s %-42s %s\n' "$alias" "$url" "$estado"
-    done < <(lineas)
+        printf '%-14s %-42s %s\n' "$alias" "$url" "$status"
+    done < <(entries)
 }
 
 case "${1:-}" in
     --list|-l|list)
-        listar
+        list
         exit 0
         ;;
     -h|--help)
@@ -47,65 +47,64 @@ case "${1:-}" in
         ;;
 esac
 
-ALIAS="${1:-$(lineas | head -1 | awk '{print $1}')}"
+ALIAS="${1:-$(entries | head -1 | awk '{print $1}')}"
 
-FILA=$(lineas | awk -v a="$ALIAS" '$1 == a')
-if [ -z "$FILA" ]; then
-    echo "ERROR: '$ALIAS' no esta en $REGISTRO. Disponibles:" >&2
-    lineas | awk '{print "  " $1}' >&2
+ROW=$(entries | awk -v a="$ALIAS" '$1 == a')
+if [ -z "$ROW" ]; then
+    echo "ERROR: '$ALIAS' is not in $REGISTRY. Available:" >&2
+    entries | awk '{print "  " $1}' >&2
     exit 1
 fi
 
-URL=$(awk '{print $2}' <<<"$FILA")
+URL=$(awk '{print $2}' <<<"$ROW")
 
-# Si ya hay un agente con ese nombre, no duplicarlo: herdr lo rechazaria y
-# ademas dos OMPs contra el mismo modelo no aportan nada.
+# If an agent by that name already exists, do not duplicate it: herdr would
+# reject it, and two OMP agents against the same model add nothing.
 if herdr agent list 2>/dev/null | grep -q "\"name\":\"${ALIAS}\""; then
-    echo "'$ALIAS' ya esta levantado. Para hablarle:"
-    echo "  herdr agent prompt $ALIAS \"tu consigna\""
+    echo "'$ALIAS' is already running. To talk to it:"
+    echo "  herdr agent prompt $ALIAS \"your instruction\""
     exit 0
 fi
 
-# Chequear ANTES de partir el pane. Si el server esta caido, OMP arranca igual y
-# falla recien con el primer prompt — varios minutos despues y mucho mas dificil
-# de diagnosticar. Mejor fallar aca.
+# Check BEFORE splitting the pane. If the server is down, OMP starts anyway and
+# only fails on the first prompt — minutes later and much harder to diagnose.
 if ! curl -sf -m 10 "$URL/health" >/dev/null 2>&1; then
-    echo "ERROR: $URL/health no responde. El server de ese modelo esta caido." >&2
-    echo "       No lo levantes vos: no tenes acceso a esa maquina. Decile al usuario." >&2
+    echo "ERROR: $URL/health is not responding. That model's server is down." >&2
+    echo "       Do not try to start it yourself: it runs on another host you have" >&2
+    echo "       no access to. Tell the user. See the llamacpp-compose project." >&2
     exit 1
 fi
 
-# El pane actual es desde el que se llama esto (el de Claude Code).
-ACTUAL=$(herdr pane current | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+# The current pane is whichever one called this (Claude Code's).
+CURRENT=$(herdr pane current | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
 
-# --env es la razon de ser de todo esto. --no-focus deja el foco donde estaba,
-# asi Claude Code sigue usable mientras el otro agente arranca.
-NUEVO=$(herdr pane split "$ACTUAL" --direction right --ratio 0.5 --no-focus \
-        --env "LLAMA_CPP_BASE_URL=$URL" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+# --env is the whole reason for this design. --no-focus leaves the focus where it
+# was, so Claude Code stays usable while the other agent starts up.
+NEW=$(herdr pane split "$CURRENT" --direction right --ratio 0.5 --no-focus \
+      --env "LLAMA_CPP_BASE_URL=$URL" \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
 
-if [ -z "$NUEVO" ]; then
-    echo "ERROR: no pude crear el pane" >&2
+if [ -z "$NEW" ]; then
+    echo "ERROR: could not create the pane" >&2
     exit 1
 fi
 
-# Ponerle nombre al pane. Sin esto todos se llaman "workspace": herdr titula el
-# pane con el basename del cwd, y el WORKDIR de la imagen es
-# /home/agentic/workspace, asi que Claude y todos los modelos quedan con el mismo
-# titulo y no se distinguen en pantalla. No hay opcion de config para esto
-# (`herdr config` solo tiene check y reset-keys) ni flag en `pane split`:
-# se arregla renombrando despues de crearlo.
-herdr pane rename "$NUEVO" "$ALIAS" >/dev/null 2>&1 || true
+# Name the pane. Without this they are all called "workspace": herdr titles a
+# pane after the basename of its cwd, and the image's WORKDIR is
+# /home/agentic/workspace, so Claude and every model would share one title and be
+# indistinguishable on screen. There is no config key for this (`herdr config`
+# only offers check and reset-keys) and no flag on `pane split`.
+herdr pane rename "$NEW" "$ALIAS" >/dev/null 2>&1 || true
 
-# El prefijo llama.cpp/ lo antepone OMP; el alias tiene que coincidir con el
-# --alias del llama-server. Se verifica con: curl $URL/v1/models
-if herdr agent start "$ALIAS" --kind omp --pane "$NUEVO" -- --model "llama.cpp/$ALIAS" >/dev/null; then
-    echo "listo: '$ALIAS' corriendo en el pane $NUEVO contra $URL"
-    echo "  herdr agent prompt $ALIAS \"tu consigna\""
+# OMP prepends the llama.cpp/ prefix; the alias has to match the llama-server
+# --alias exactly. Verify with: curl $URL/v1/models
+if herdr agent start "$ALIAS" --kind omp --pane "$NEW" -- --model "llama.cpp/$ALIAS" >/dev/null; then
+    echo "ready: '$ALIAS' running in pane $NEW against $URL"
+    echo "  herdr agent prompt $ALIAS \"your instruction\""
     echo "  herdr agent read   $ALIAS --source visible --lines 60"
     echo "  close-model $ALIAS"
 else
-    echo "ERROR: el pane $NUEVO se creo pero OMP no arranco ahi." >&2
-    echo "       Mira que pasa con: herdr pane read $NUEVO --source visible" >&2
+    echo "ERROR: pane $NEW was created but OMP did not start in it." >&2
+    echo "       See what happened with: herdr pane read $NEW --source visible" >&2
     exit 1
 fi

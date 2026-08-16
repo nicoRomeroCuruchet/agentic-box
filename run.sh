@@ -1,21 +1,23 @@
 #!/bin/bash
-# Levanta la caja `agentic`: herdr con Claude Code, y modelos locales a pedido.
+# Launch the box: herdr with Claude Code, and local models on demand.
 #
-# Se corre COMO agentic:
+# Runs AS the box user:
 #     sudo -u agentic -H bash ~/agentic-box/run.sh
 #
-# Es idempotente: se puede correr las veces que haga falta.
+# Idempotent: safe to run as many times as needed.
 #
-# Que cambio respecto de la version anterior: antes la caja apuntaba a UN modelo,
-# fijado con LLM_HOST/LLM_MODEL al crear el contenedor, y cambiarlo obligaba a
-# pararla y recrearla. Ahora lee models.conf y le da acceso a TODOS: el
-# contenedor arranca solo con Claude Code, y adentro se levantan agentes con
-# `spawn-model <alias>`.
+# The container starts with Claude Code alone. Model agents are launched from
+# inside with `spawn-model <alias>`, each in its own pane with its own
+# LLAMA_CPP_BASE_URL, so several can run against different hosts at once.
 set -euo pipefail
 
-if [ "$(id -un)" != "agentic" ]; then
-    echo "ERROR: esto va como agentic, no como $(id -un)." >&2
-    echo "       sudo -u agentic -H bash ~/agentic-box/run.sh" >&2
+# The box user is whoever owns this deployment — derived from the file, not
+# assumed, so a differently-named user works without editing anything.
+BOX_USER="$(stat -c %U "$0")"
+
+if [ "$(id -un)" != "$BOX_USER" ]; then
+    echo "ERROR: this runs as $BOX_USER, not as $(id -un)." >&2
+    echo "       sudo -u $BOX_USER -H bash $0" >&2
     exit 1
 fi
 
@@ -23,133 +25,138 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DST="$HOME/agentic-box"
 IMG=agentic-box
 
-# Docker rootless de agentic, no el daemon del sistema.
+# The box user's rootless docker, not the system daemon.
 export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
 
 if [ ! -S "${DOCKER_HOST#unix://}" ]; then
-    echo "ERROR: no encuentro el socket de docker rootless en ${DOCKER_HOST#unix://}" >&2
-    echo "       Arrancalo con: systemctl --user start docker" >&2
+    echo "ERROR: no rootless docker socket at ${DOCKER_HOST#unix://}" >&2
+    echo "       Start it with: systemctl --user start docker" >&2
+    echo "       If it vanishes after every reboot, lingering is off:" >&2
+    echo "         sudo loginctl enable-linger $BOX_USER" >&2
     exit 1
 fi
 
-# 1. Traer el contexto de build al home propio (por si se corre desde otro lado).
+# 1. Bring the build context into this user's own home, if run from elsewhere.
 if [ "$SRC" != "$DST" ]; then
-    echo "== copiando contexto a $DST =="
+    echo "== copying build context to $DST =="
     mkdir -p "$DST"
     cp -r "$SRC"/. "$DST"/
 fi
 cd "$DST"
 
-# 2. El registro de modelos.
-REGISTRO="$DST/models.conf"
-if [ ! -f "$REGISTRO" ]; then
-    echo "ERROR: falta $REGISTRO" >&2
-    echo "       cp $DST/models.conf.example $DST/models.conf  y poné los valores reales" >&2
+# 2. The model registry.
+REGISTRY="$DST/models.conf"
+if [ ! -f "$REGISTRY" ]; then
+    echo "ERROR: $REGISTRY is missing" >&2
+    echo "       cp $DST/models.conf.example $DST/models.conf  and fill it in" >&2
     exit 1
 fi
 
-# alias base_url ip, sin comentarios ni lineas vacias
-lineas() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRO"; }
+# alias base_url ip, skipping comments and blank lines
+entries() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRY"; }
 
-if [ -z "$(lineas)" ]; then
-    echo "ERROR: $REGISTRO no tiene ninguna entrada valida" >&2
+if [ -z "$(entries)" ]; then
+    echo "ERROR: $REGISTRY has no valid entries" >&2
     exit 1
 fi
 
-# 3. Chequear cada modelo ANTES de construir nada. No es fatal que alguno este
-#    caido — la caja sirve igual con los demas — pero conviene saberlo ahora y no
-#    cuando spawn-model falle adentro.
-echo "== modelos en $REGISTRO =="
+# 3. Check every model BEFORE building anything. One being down is not fatal —
+#    the box still works with the others — but it is worth knowing now rather
+#    than when spawn-model fails inside.
+echo "== models in $REGISTRY =="
 ADDHOSTS=()
 while read -r alias url ip; do
     host="${url#https://}"; host="${host#http://}"; host="${host%%/*}"
-    # --add-host: adentro del contenedor no resuelve MagicDNS (el resolver de
-    # Docker no conoce la tailnet). Fijando el nombre a la IP 100.x el TLS igual
-    # valida, porque el certificado de `tailscale serve` es para ese mismo nombre.
+    # --add-host: the container's resolver does not know the tailnet, so MagicDNS
+    # names do not resolve inside it. Pinning the name to the 100.x address keeps
+    # TLS valid, because the `tailscale serve` certificate is for that same name.
     ADDHOSTS+=(--add-host "${host}:${ip}")
     if curl -sf -m 8 "$url/health" >/dev/null 2>&1; then
-        servidos=$(curl -s -m 8 "$url/v1/models" | grep -o '"id":"[^"]*"' | cut -d'"' -f4 | tr '\n' ' ')
-        # Que responda no alcanza: tiene que servir el alias que dice el registro,
-        # porque es el que spawn-model le va a pedir a OMP.
-        if grep -qw "$alias" <<<"$servidos"; then
+        served=$(curl -s -m 8 "$url/v1/models" | grep -o '"id":"[^"]*"' | cut -d'"' -f4 | tr '\n' ' ')
+        # Answering is not enough: it has to serve the alias the registry claims,
+        # because that is what spawn-model will ask OMP for.
+        if grep -qw "$alias" <<<"$served"; then
             printf '   ok        %-14s %s\n' "$alias" "$url"
         else
-            printf '   OJO       %-14s responde pero sirve [%s], no %s\n' "$alias" "${servidos% }" "$alias"
+            printf '   MISMATCH  %-14s answers but serves [%s], not %s\n' "$alias" "${served% }" "$alias"
         fi
     else
-        printf '   caido     %-14s %s\n' "$alias" "$url"
+        printf '   down      %-14s %s\n' "$alias" "$url"
     fi
-done < <(lineas)
+done < <(entries)
 
-# 4. Los binarios de los agentes. No estan versionados (GitHub no acepta
-#    archivos de mas de 100 MB y claude pesa ~308), asi que deploy.sh los copia
-#    desde el host. Sin ellos el build produce una imagen que arranca y no sirve.
+# 4. The agent binaries. Not versioned (GitHub rejects files over 100 MB and the
+#    Claude Code binary is around 300), so deploy.sh copies them from the host.
+#    Without them the build produces an image that starts and does nothing.
 for b in claude omp herdr; do
     if [ ! -x "$DST/bin/$b" ]; then
-        echo "ERROR: falta $DST/bin/$b" >&2
-        echo "       Corré deploy.sh desde el repo, que los copia desde ~/.local/bin." >&2
+        echo "ERROR: $DST/bin/$b is missing" >&2
+        echo "       Run deploy.sh from the repo; it copies them from ~/.local/bin." >&2
         exit 1
     fi
 done
 
-# 5. Construir.
+# 5. Build.
 echo "== build =="
 docker build -t "$IMG" .
 
-# 6. Token de Claude Code. El login por OAuth adentro del contenedor no es viable: hay
-# que pegar a mano un codigo largo con formato `codigo#estado` en un pane de un TUI
-# dentro de un TTY de docker, y el pegado se trunca — de ahi el
-# "OAuth error: Invalid code". La solucion es generar el token AFUERA, en una terminal
-# normal, con `claude setup-token`, y pasarlo por env.
+# 6. The Claude Code token. Logging in via OAuth inside the container is not
+# viable: it means pasting a long `code#state` string into a TUI, inside a docker
+# TTY, inside a herdr pane, and the paste gets truncated — hence
+# "OAuth error: Invalid code". Generate the token OUTSIDE, in a normal terminal,
+# with `claude setup-token`, and pass it through the environment.
 #
-# Se usa --env-file y no -e para que el token no aparezca en `ps`.
+# --env-file rather than -e, so the token never shows up in `ps`.
 #
-# ESTO VA ANTES del chequeo de "ya esta corriendo". Las variables de entorno se fijan
-# al CREAR el contenedor: si ya hay uno andando sin token, adjuntarse no se lo agrega,
-# y relanzar el script en loop no cambia nada. Hay que pararlo y recrearlo.
+# This block goes BEFORE the "already running" check. Environment variables are
+# fixed when the container is CREATED: if one is already running without the
+# token, attaching does not add it, and re-running this script changes nothing.
+# It has to be stopped and recreated.
 ENVFILE="$HOME/.config/agentic-box.env"
 ENVARGS=()
 if [ -f "$ENVFILE" ]; then
     ENVARGS=(--env-file "$ENVFILE")
-    echo "== token tomado de $ENVFILE =="
+    echo "== token read from $ENVFILE =="
 else
-    echo "AVISO: no existe $ENVFILE, Claude Code va a pedir login interactivo" >&2
-    echo "       (y el pegado del codigo suele fallar). Para evitarlo:" >&2
-    echo "         1. en una terminal normal, como vos:  claude setup-token" >&2
-    echo "         2. sudo -u agentic -H mkdir -p /home/agentic/.config" >&2
-    echo "         3. guardar en $ENVFILE la linea:  CLAUDE_CODE_OAUTH_TOKEN=<token>" >&2
-    echo "         4. sudo -u agentic -H chmod 600 $ENVFILE" >&2
+    echo "WARNING: $ENVFILE does not exist; Claude Code will ask for an interactive" >&2
+    echo "         login, and pasting the code usually fails. To avoid it:" >&2
+    echo "           1. in a normal terminal, as yourself:  claude setup-token" >&2
+    echo "           2. sudo -u $BOX_USER -H mkdir -p $HOME/.config" >&2
+    echo "           3. write this single line into $ENVFILE:" >&2
+    echo "                CLAUDE_CODE_OAUTH_TOKEN=<token>" >&2
+    echo "           4. sudo -u $BOX_USER -H chmod 600 $ENVFILE" >&2
 fi
 
-# 7. Si ya hay una sesion corriendo, engancharse — salvo que ese contenedor se haya
-#    creado sin el token. Adjuntarse no cambia ninguna variable: se fijan al crear.
+# 7. If a session is already running, attach to it — unless that container was
+#    created without the token. Attaching changes no variable: they are fixed at
+#    creation time.
 #
-#    Nota: el chequeo de "apunta a otra URL" que habia aca ya no hace falta. Antes
-#    el contenedor tenia UN backend clavado en LLAMA_CPP_BASE_URL y adjuntarse a uno
-#    viejo te dejaba hablando con el modelo equivocado sin aviso. Ahora la URL se
-#    decide por agente al crear su pane, asi que un contenedor no puede quedar
-#    "apuntado" a nada.
+#    Note: the old "points at a different URL" guard is gone. The container used
+#    to have one backend pinned in LLAMA_CPP_BASE_URL, so attaching to a stale
+#    one left you talking to the wrong model with no warning. The URL is now
+#    decided per agent, when its pane is created, so a container cannot be
+#    "pointed" anywhere.
 if docker ps --format '{{.Names}}' | grep -qx "$IMG"; then
-    ENV_ACTUAL=$(docker inspect "$IMG" --format '{{range .Config.Env}}{{println .}}{{end}}')
+    CURRENT_ENV=$(docker inspect "$IMG" --format '{{range .Config.Env}}{{println .}}{{end}}')
 
-    if [ ${#ENVARGS[@]} -gt 0 ] && ! grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' <<<"$ENV_ACTUAL"; then
+    if [ ${#ENVARGS[@]} -gt 0 ] && ! grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' <<<"$CURRENT_ENV"; then
         echo >&2
-        echo "PARA: el contenedor que ya esta corriendo se creo SIN el token." >&2
-        echo "      Las variables se fijan al crear el contenedor, asi que adjuntarse" >&2
-        echo "      no lo va a loguear por mas veces que relances esto." >&2
+        echo "STOP: the running container was created WITHOUT the token." >&2
+        echo "      Environment variables are fixed at creation, so attaching will" >&2
+        echo "      never log it in, no matter how many times you re-run this." >&2
         echo >&2
-        echo "      Paralo y volve a levantar:" >&2
+        echo "      Stop it and bring it back up:" >&2
         echo "        bash $DST/ctl.sh stop && bash $DST/run.sh" >&2
         exit 1
     fi
 
-    echo "== ya esta corriendo, adjuntando =="
+    echo "== already running, attaching =="
     exec docker attach "$IMG"
 fi
 
-echo "== run — claude solo; modelos a pedido con spawn-model =="
-# Los volumenes nombrados hacen que el login de Claude Code y las sesiones de OMP
-# sobrevivan al reinicio del contenedor.
+echo "== run — claude only; local models on demand via spawn-model =="
+# The named volumes are what make the Claude Code login and the OMP sessions
+# survive a container restart.
 exec docker run -it --rm \
     --name "$IMG" \
     "${ADDHOSTS[@]}" \

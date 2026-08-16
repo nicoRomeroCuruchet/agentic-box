@@ -1,17 +1,18 @@
-# Los binarios de los agentes. NO van al repo por dos razones:
+# The agent binaries. NOT in the repo, for two reasons:
 #
-#   1. GitHub rechaza archivos de mas de 100 MB, y claude son ~308 MB y omp ~170.
-#   2. Son binarios que ya tenes instalados en el host; versionarlos seria guardar
-#      una copia que envejece sola.
+#   1. GitHub rejects files over 100 MB, and the Claude Code binary is ~300 MB
+#      with omp at ~170.
+#   2. They are already installed on the host; versioning them would store a
+#      copy that goes stale on its own.
 #
-# deploy.sh los copia desde ~/.local/bin del usuario al preparar el build.
+# deploy.sh copies them from the host's ~/.local/bin on every deploy.
 bin/
 
-# Configuracion real de esta instalacion: nombres de la tailnet e IPs 100.x.
-# La referencia versionada es models.conf.example.
+# This installation's real configuration: tailnet hostnames and 100.x addresses.
+# The versioned reference is models.conf.example.
 models.conf
 
-# Backups que dejaron ediciones in-place. El historial es git, no estos.
+# Backups left behind by in-place edits. Git is the history, not these.
 backup-*/
-*.anterior
+*.previous
 *.pre-*
