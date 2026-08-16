@@ -1,0 +1,17 @@
+# Los binarios de los agentes. NO van al repo por dos razones:
+#
+#   1. GitHub rechaza archivos de mas de 100 MB, y claude son ~308 MB y omp ~170.
+#   2. Son binarios que ya tenes instalados en el host; versionarlos seria guardar
+#      una copia que envejece sola.
+#
+# deploy.sh los copia desde ~/.local/bin del usuario al preparar el build.
+bin/
+
+# Configuracion real de esta instalacion: nombres de la tailnet e IPs 100.x.
+# La referencia versionada es models.conf.example.
+models.conf
+
+# Backups que dejaron ediciones in-place. El historial es git, no estos.
+backup-*/
+*.anterior
+*.pre-*

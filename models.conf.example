@@ -1,0 +1,28 @@
+# Registro de modelos que la caja puede levantar.
+#
+# Copialo a models.conf y poné los valores reales:
+#     cp models.conf.example models.conf
+#
+# models.conf NO se versiona: tiene el nombre de tu tailnet y las IPs 100.x de
+# tus nodos. Este archivo es la referencia con la forma.
+#
+# Formato — tres campos separados por espacios, en este orden:
+#
+#     <alias>   <base_url>   <ip>
+#
+#   alias     El --alias del llama-server que sirve ese modelo. Tiene que
+#             coincidir EXACTO con lo que devuelve /v1/models: OMP lo recibe
+#             como `llama.cpp/<alias>`. Es tambien el nombre del agente en herdr.
+#   base_url  URL completa con esquema. Sin barra final (una barra de mas
+#             produce //v1/chat/completions y un 404 que parece otra cosa).
+#   ip        La IP 100.x del nodo en la tailnet. NO es opcional: adentro del
+#             contenedor no resuelve MagicDNS, porque el resolver de Docker no
+#             conoce la tailnet. run.sh arma un --add-host por cada linea.
+#             El TLS igual valida: el certificado de `tailscale serve` es para
+#             ese mismo nombre. Sacala con `tailscale status`.
+#
+# Las lineas vacias y las que empiezan con # se ignoran.
+# El PRIMER modelo de la lista es el default de `spawn-model` sin argumentos.
+
+qwen38-27b   https://TU-NODO.TU-TAILNET.ts.net       100.x.y.z
+ornith-35b   https://OTRO-NODO.TU-TAILNET.ts.net     100.x.y.z

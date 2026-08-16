@@ -1,0 +1,103 @@
+#!/bin/bash
+# Levanta un agente OMP contra un modelo local, en un pane nuevo.
+#
+#   spawn-model                 el primero de models.conf
+#   spawn-model ornith-35b      uno en particular
+#   spawn-model --list          que hay disponible
+#
+# Pensado para que lo llame Claude Code desde adentro de la caja: el usuario no
+# tiene que tocar nada ni copiar entre panes.
+#
+# Por que un pane nuevo y no `agent start` a secas: cada modelo vive en una
+# maquina distinta de la tailnet, asi que cada OMP necesita su propio
+# LLAMA_CPP_BASE_URL. `herdr agent start` NO acepta --env; `herdr pane split` si.
+# Entonces el entorno se le pone al pane y el agente lo hereda al arrancar ahi.
+set -uo pipefail
+
+REGISTRO="${MODELS_CONF:-/usr/local/share/agentic-box/models.conf}"
+
+if [ ! -f "$REGISTRO" ]; then
+    echo "ERROR: no encuentro el registro de modelos en $REGISTRO" >&2
+    exit 1
+fi
+
+# alias base_url ip, ignorando comentarios y lineas vacias
+lineas() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRO"; }
+
+listar() {
+    printf '%-14s %-42s %s\n' ALIAS URL ESTADO
+    while read -r alias url _ip; do
+        if curl -sf -m 5 "$url/health" >/dev/null 2>&1; then
+            estado="arriba"
+        else
+            estado="NO RESPONDE"
+        fi
+        printf '%-14s %-42s %s\n' "$alias" "$url" "$estado"
+    done < <(lineas)
+}
+
+case "${1:-}" in
+    --list|-l|list)
+        listar
+        exit 0
+        ;;
+    -h|--help)
+        sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+
+ALIAS="${1:-$(lineas | head -1 | awk '{print $1}')}"
+
+FILA=$(lineas | awk -v a="$ALIAS" '$1 == a')
+if [ -z "$FILA" ]; then
+    echo "ERROR: '$ALIAS' no esta en $REGISTRO. Disponibles:" >&2
+    lineas | awk '{print "  " $1}' >&2
+    exit 1
+fi
+
+URL=$(awk '{print $2}' <<<"$FILA")
+
+# Si ya hay un agente con ese nombre, no duplicarlo: herdr lo rechazaria y
+# ademas dos OMPs contra el mismo modelo no aportan nada.
+if herdr agent list 2>/dev/null | grep -q "\"name\":\"${ALIAS}\""; then
+    echo "'$ALIAS' ya esta levantado. Para hablarle:"
+    echo "  herdr agent prompt $ALIAS \"tu consigna\""
+    exit 0
+fi
+
+# Chequear ANTES de partir el pane. Si el server esta caido, OMP arranca igual y
+# falla recien con el primer prompt — varios minutos despues y mucho mas dificil
+# de diagnosticar. Mejor fallar aca.
+if ! curl -sf -m 10 "$URL/health" >/dev/null 2>&1; then
+    echo "ERROR: $URL/health no responde. El server de ese modelo esta caido." >&2
+    echo "       No lo levantes vos: no tenes acceso a esa maquina. Decile al usuario." >&2
+    exit 1
+fi
+
+# El pane actual es desde el que se llama esto (el de Claude Code).
+ACTUAL=$(herdr pane current | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+
+# --env es la razon de ser de todo esto. --no-focus deja el foco donde estaba,
+# asi Claude Code sigue usable mientras el otro agente arranca.
+NUEVO=$(herdr pane split "$ACTUAL" --direction right --ratio 0.5 --no-focus \
+        --env "LLAMA_CPP_BASE_URL=$URL" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["pane"]["pane_id"])')
+
+if [ -z "$NUEVO" ]; then
+    echo "ERROR: no pude crear el pane" >&2
+    exit 1
+fi
+
+# El prefijo llama.cpp/ lo antepone OMP; el alias tiene que coincidir con el
+# --alias del llama-server. Se verifica con: curl $URL/v1/models
+if herdr agent start "$ALIAS" --kind omp --pane "$NUEVO" -- --model "llama.cpp/$ALIAS" >/dev/null; then
+    echo "listo: '$ALIAS' corriendo en el pane $NUEVO contra $URL"
+    echo "  herdr agent prompt $ALIAS \"tu consigna\""
+    echo "  herdr agent read   $ALIAS --source visible --lines 60"
+    echo "  close-model $ALIAS"
+else
+    echo "ERROR: el pane $NUEVO se creo pero OMP no arranco ahi." >&2
+    echo "       Mira que pasa con: herdr pane read $NUEVO --source visible" >&2
+    exit 1
+fi
