@@ -44,17 +44,27 @@ setup_layout() {
         return 1
     fi
 
-    # 2. The only existing pane is Claude Code's. Nothing else is split: model
+    # 2. Name the workspace. herdr labels it after the directory the session
+    #    started in, which is always /home/agentic/workspace here — so the
+    #    sidebar groups every agent under a heading that reads "workspace" and
+    #    says nothing. This is a separate label from the pane titles: renaming
+    #    panes does not touch it.
+    local ws
+    ws=$(herdr workspace list 2>/dev/null \
+         | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["workspaces"][0]["workspace_id"])' 2>/dev/null)
+    [ -n "$ws" ] && herdr workspace rename "$ws" agentic-box >/dev/null 2>&1 || true
+
+    # 3. The only existing pane is Claude Code's. Nothing else is split: model
     #    panes are created by spawn-model when they are needed.
     local p1
     p1=$(herdr pane list | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["panes"][0]["pane_id"])')
 
-    # 3. Name the pane. By default herdr titles it after the basename of the cwd,
+    # 4. Name the pane. By default herdr titles it after the basename of the cwd,
     #    which here is always "workspace" (the image's WORKDIR): without this,
     #    Claude and every model agent show up under the same name on screen.
     herdr pane rename "$p1" claude >/dev/null 2>&1 || true
 
-    # 4. `agent start` waits until the agent is ready for input, so an ok return
+    # 5. `agent start` waits until the agent is ready for input, so an ok return
     #    means the pane is usable.
     herdr agent start claude --kind claude --pane "$p1" >/dev/null
 

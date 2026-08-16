@@ -127,6 +127,12 @@ spawn-model <alias>       # must create the pane AND start OMP in it
 
 ## Traps
 
+- **The sidebar groups agents by workspace, and the workspace label is separate from the
+  pane titles.** herdr names the workspace after the directory the session started in —
+  always `/home/agentic/workspace` here — so every agent appears under a heading reading
+  "workspace", no matter how the panes are named. Fixed with `herdr workspace rename`, in
+  `entrypoint.sh`. Renaming panes does not touch it: they are different labels, and
+  confusing them costs a debugging round.
 - **herdr titles panes after the basename of their `cwd`.** Since the image's `WORKDIR` is
   `/home/agentic/workspace`, without intervention EVERY pane is called `workspace` and they
   cannot be told apart on screen. There is no config key for the title (`herdr config` only
