@@ -11,6 +11,20 @@ Watch the ambiguity: there are two `CLAUDE.md` files here, for two different aud
 
 If someone asks to "change the agent's instructions", it is almost always the second.
 
+## Why this exists — read before weakening anything
+
+This project was built after an agent running unsupervised, with full permissions on its
+user's own account, deleted that account's home directory. The machine had to be
+reinstalled.
+
+Every constraint here is a consequence: the agents run as a separate unprivileged user, in
+a rootless container, with no sudo, no `docker` group, no `ssh`, and no access to the host
+user's home. **When a task would be easier if one of those were relaxed, that is the moment
+to say no and propose another way.** The isolation is not hygiene; it is the feature.
+
+The known gaps are documented in README (outbound network is open, there are no resource
+limits). Closing those is welcome. Opening new ones is not.
+
 ## What this is
 
 A rootless Docker container where Claude Code orchestrates OMP agents against llama.cpp

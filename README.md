@@ -20,6 +20,60 @@ models.
     rootless container, unprivileged user, no ssh and no docker inside
 ```
 
+## Why this exists
+
+**An agent left running unsupervised with full permissions deleted the home directory of
+the account it was running as.** The machine had to be reinstalled.
+
+That is the whole reason for this project. Everything about the setup follows from it:
+the agents do not run as you.
+
+An agent on your own account can do anything you can do. Not because it is malicious —
+because a wrong path in a cleanup step, an over-broad glob, a command that looked
+reasonable in isolation. The blast radius of a mistake is your entire account, and you find
+out afterwards.
+
+So the agents run as a **different, unprivileged user**, inside a container:
+
+| Boundary | What it stops |
+|---|---|
+| A separate host user (`agentic`, uid 1001) | mistakes land in a home with nothing in it |
+| Your home at mode 700 | unreadable from the box — not by permissions, not by sudo, not by mounting it in a container |
+| No sudo, not in the `docker` group | cannot escalate on the host |
+| Rootless Docker | a container escape lands as `agentic`, not as root |
+| No `ssh` and no `docker` in the image | cannot hop to other machines or start privileged containers |
+| Only three named volumes mounted | nothing of the host filesystem is reachable |
+
+The layering is the point. Any single one of these can be wrong; they are unlikely to all
+be wrong at once.
+
+### What it does NOT protect against
+
+Stated plainly, because a security document that only lists its strengths is not one:
+
+- **Outbound network is open.** The container reaches the internet and the whole private
+  network by IP. DNS happens to be broken, which is an accident of the rootless network
+  setup and not a control — it is trivially bypassed. An agent can exfiltrate anything it
+  holds, including its own API token.
+- **No resource limits.** No memory cap, no CPU cap, no PID limit. A runaway loop can take
+  the whole machine down. **This is the most likely real failure**, and it is not a
+  security problem, just an expensive one.
+- **The model servers have no authentication.** Anything in the box can send them whatever
+  it likes.
+
+None of these are filesystem risks, which is what the box was built for. Know them anyway.
+
+## Why an agent driving other agents
+
+Given the isolation, the second question is why bother orchestrating at all.
+
+Delegating to a local model costs no API tokens and keeps the data on your own network. But
+copying and pasting between two terminals makes it unusable in practice. Here Claude drives
+the other pane through herdr's socket API: it sends the instruction, waits, reads the
+answer and carries on.
+
+---
+
 ## The model servers are a separate project
 
 This box is a **client**. It does not serve any model and does not need to know how they
@@ -31,20 +85,6 @@ The setup used here is
 `docker compose` wrapper around llama.cpp that serves a GGUF model on a GPU. That repo is
 where the models are configured, where the tuning was measured, and where you go when a
 model stops responding. Any other OpenAI-compatible server works too.
-
----
-
-## Why
-
-Delegating to a local model costs no API tokens and keeps the data on your own network. But
-copying and pasting between two terminals makes it unusable in practice. Here Claude drives
-the other pane through herdr's socket API: it sends the instruction, waits, reads the
-answer and carries on.
-
-The isolation is not decorative. The box user **has no sudo, is not in the `docker` group,
-runs its own rootless daemon, and cannot read the host user's home** — not through
-permissions, not by mounting it in a container. The image ships no `ssh` and no `docker`
-either, so the agents inside cannot reach other machines.
 
 ---
 
