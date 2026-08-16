@@ -108,6 +108,12 @@ spawn-model <alias>       # tiene que crear el pane Y arrancar OMP ahi
 
 ## Trampas
 
+- **herdr titula los panes con el basename del `cwd`.** Como el `WORKDIR` de la imagen es
+  `/home/agentic/workspace`, sin intervencion TODOS los panes se llaman `workspace` y no se
+  distinguen en pantalla. No hay clave de config para el titulo (`herdr config` solo tiene
+  `check` y `reset-keys`) ni flag en `pane split`: se arregla con
+  `herdr pane rename <PANE_ID> <LABEL>` despues de crear el pane. `spawn-model` y
+  `entrypoint.sh` ya lo hacen.
 - **Las variables de entorno se fijan al CREAR el contenedor.** Adjuntarse a uno que ya
   corre no cambia ninguna. Si algo depende de una variable nueva, hay que `ctl.sh stop` y
   recrear — no alcanza con relanzar `run.sh`.

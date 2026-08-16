@@ -48,7 +48,12 @@ setup_layout() {
     local p1
     p1=$(herdr pane list | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["panes"][0]["pane_id"])')
 
-    # 3. `agent start` espera a que el agente este listo para recibir input, asi
+    # 3. Nombrar el pane. Por defecto herdr lo titula con el basename del cwd, que
+    #    aca es siempre "workspace" (el WORKDIR de la imagen): sin esto, Claude y
+    #    todos los modelos aparecen con el mismo nombre en pantalla.
+    herdr pane rename "$p1" claude >/dev/null 2>&1 || true
+
+    # 4. `agent start` espera a que el agente este listo para recibir input, asi
     #    que si devuelve ok el pane quedo utilizable.
     herdr agent start claude --kind claude --pane "$p1" >/dev/null
 

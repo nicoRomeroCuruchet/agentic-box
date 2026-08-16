@@ -89,6 +89,14 @@ if [ -z "$NUEVO" ]; then
     exit 1
 fi
 
+# Ponerle nombre al pane. Sin esto todos se llaman "workspace": herdr titula el
+# pane con el basename del cwd, y el WORKDIR de la imagen es
+# /home/agentic/workspace, asi que Claude y todos los modelos quedan con el mismo
+# titulo y no se distinguen en pantalla. No hay opcion de config para esto
+# (`herdr config` solo tiene check y reset-keys) ni flag en `pane split`:
+# se arregla renombrando despues de crearlo.
+herdr pane rename "$NUEVO" "$ALIAS" >/dev/null 2>&1 || true
+
 # El prefijo llama.cpp/ lo antepone OMP; el alias tiene que coincidir con el
 # --alias del llama-server. Se verifica con: curl $URL/v1/models
 if herdr agent start "$ALIAS" --kind omp --pane "$NUEVO" -- --model "llama.cpp/$ALIAS" >/dev/null; then
