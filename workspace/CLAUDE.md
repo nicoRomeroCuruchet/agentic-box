@@ -28,6 +28,12 @@ no access to. Tell the user.
 
 The agent's name in herdr is the model's alias, and so is the pane title.
 
+**Refer to models by alias, never by hostname.** `models.conf` holds the addresses of
+machines on a private network; repeating them in your replies puts them on screen, and
+screens get recorded and shared. `spawn-model` deliberately does not print them either. If
+a server is unreachable, say which alias is down — the tool prints the URL to stderr, and
+that is enough to diagnose.
+
 ## Driving an agent that is already up
 
 ```bash

@@ -24,15 +24,19 @@ fi
 # alias base_url ip, skipping comments and blank lines
 entries() { grep -vE '^[[:space:]]*(#|$)' "$REGISTRY"; }
 
+# Hostnames are deliberately not printed. They are in models.conf for whoever
+# needs them, they are noise to the user, and keeping them out of stdout means a
+# screen recording of this tool does not leak the topology of a private network.
+# The failure path below does print the URL, because there it is the diagnosis.
 list() {
-    printf '%-14s %-42s %s\n' ALIAS URL STATUS
+    printf '%-14s %s\n' ALIAS STATUS
     while read -r alias url _ip; do
         if curl -sf -m 5 "$url/health" >/dev/null 2>&1; then
             status="up"
         else
             status="NOT RESPONDING"
         fi
-        printf '%-14s %-42s %s\n' "$alias" "$url" "$status"
+        printf '%-14s %s\n' "$alias" "$status"
     done < <(entries)
 }
 
@@ -99,7 +103,7 @@ herdr pane rename "$NEW" "$ALIAS" >/dev/null 2>&1 || true
 # OMP prepends the llama.cpp/ prefix; the alias has to match the llama-server
 # --alias exactly. Verify with: curl $URL/v1/models
 if herdr agent start "$ALIAS" --kind omp --pane "$NEW" -- --model "llama.cpp/$ALIAS" >/dev/null; then
-    echo "ready: '$ALIAS' running in pane $NEW against $URL"
+    echo "ready: '$ALIAS' running in pane $NEW"
     echo "  herdr agent prompt $ALIAS \"your instruction\""
     echo "  herdr agent read   $ALIAS --source visible --lines 60"
     echo "  close-model $ALIAS"
