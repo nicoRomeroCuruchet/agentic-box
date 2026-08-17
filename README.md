@@ -20,6 +20,15 @@ models.
     rootless container, unprivileged user, no ssh and no docker inside
 ```
 
+## Demo
+
+Deploying the box, then asking Claude — in plain language — to bring up both local models.
+Each one lands in its own pane, against a different host. 4.5 minutes at 10x speed.
+
+<video src="docs/demo.mp4" controls muted loop width="100%"></video>
+
+*(If the player does not load, [download `docs/demo.mp4`](docs/demo.mp4) — 1.8 MB.)*
+
 ## Why this exists
 
 **An agent left running unsupervised with full permissions deleted the home directory of

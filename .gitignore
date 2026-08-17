@@ -16,3 +16,10 @@ models.conf
 backup-*/
 *.previous
 *.pre-*
+
+# Raw screen recordings. The demo that ships is docs/demo.mp4, 1.8 MB, encoded
+# from these. The sources are tens of MB and belong outside the repo: a blob
+# committed once stays in the history and is re-downloaded on every clone.
+*.webm
+*.mkv
+*.mov
