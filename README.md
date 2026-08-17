@@ -34,11 +34,6 @@ own pane, against a different host on the network.
 
 ![Claude spawning two local model agents](docs/demo.gif)
 
-The full session continues past this point, with both models given the same task and their
-answers compared: [`docs/demo.mp4`](docs/demo.mp4), 26 s, 1.8 MB. It is a file rather than
-a player because GitHub does not render `<video>` in a README — only in issues and
-releases, where it hosts the file itself.
-
 ## Why this exists
 
 **An agent left running unsupervised with full permissions deleted the home directory of
