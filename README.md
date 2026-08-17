@@ -1,5 +1,12 @@
 # agentic-box
 
+[![CI](https://img.shields.io/github/actions/workflow/status/nicoRomeroCuruchet/agentic-box/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/nicoRomeroCuruchet/agentic-box/actions)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![Docker](https://img.shields.io/badge/Docker-rootless-2496ED?style=flat-square&logo=docker&logoColor=white)
+![Bash](https://img.shields.io/badge/Bash-5-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
+![Claude Code](https://img.shields.io/badge/Claude_Code-agent-D97757?style=flat-square&logo=anthropic&logoColor=white)
+![llama.cpp](https://img.shields.io/badge/llama.cpp-local_models-lightgrey?style=flat-square)
+
 An isolated box where **Claude Code drives local model agents**.
 
 It runs in a rootless Docker container, as an unprivileged user, with `herdr` orchestrating
@@ -22,12 +29,15 @@ models.
 
 ## Demo
 
-Deploying the box, then asking Claude — in plain language — to bring up both local models.
-Each one lands in its own pane, against a different host. 4.5 minutes at 10x speed.
+Asking Claude — in plain language — to bring up both local models. Each one lands in its
+own pane, against a different host on the network.
 
-<video src="docs/demo.mp4" controls muted loop width="100%"></video>
+![Claude spawning two local model agents](docs/demo.gif)
 
-*(If the player does not load, [download `docs/demo.mp4`](docs/demo.mp4) — 1.8 MB.)*
+The full session continues past this point, with both models given the same task and their
+answers compared: [`docs/demo.mp4`](docs/demo.mp4), 26 s, 1.8 MB. It is a file rather than
+a player because GitHub does not render `<video>` in a README — only in issues and
+releases, where it hosts the file itself.
 
 ## Why this exists
 

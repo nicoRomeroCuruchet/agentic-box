@@ -1,0 +1,67 @@
+# Deliberately does not build the image.
+#
+# The Dockerfile copies bin/, which holds the agent binaries and is gitignored:
+# the Claude Code binary alone is around 300 MB and GitHub rejects files over
+# 100 MB. deploy.sh supplies them from the host. So a `docker build` here would
+# fail for a reason that says nothing about the code.
+#
+# What is checked is everything that can be, without those binaries.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax
+        run: |
+          for f in *.sh bin-tools/*; do
+            printf '%-28s' "$f"
+            bash -n "$f" && echo ok
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          # Errors fail the build; style and info do not. The scripts are
+          # operational glue, not a library.
+          shellcheck --severity=error --shell=bash *.sh bin-tools/*
+
+  config:
+    name: Config and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: models.conf.example is parseable
+        run: |
+          n=$(grep -vcE '^[[:space:]]*(#|$)' models.conf.example)
+          [ "$n" -gt 0 ] || { echo "no entries"; exit 1; }
+          grep -vE '^[[:space:]]*(#|$)' models.conf.example \
+            | awk 'NF!=3 { print "bad line (" NF " fields): " $0; bad=1 }
+                   END { exit bad+0 }'
+          echo "$n entries, all with 3 fields"
+
+      - name: No real hostnames or addresses leaked into versioned files
+        run: |
+          # models.conf is gitignored; only its example should be here, and the
+          # example must not carry a real tailnet name or 100.x address.
+          if git ls-files -z | xargs -0 grep -nE '100\.([6-9][0-9]|1[0-2][0-7])\.[0-9]+\.[0-9]+' ; then
+            echo "a real 100.x address is committed"; exit 1
+          fi
+          echo "clean"
+
+      - name: The two CLAUDE.md files exist and are distinct
+        run: |
+          test -f CLAUDE.md && test -f workspace/CLAUDE.md
+          ! cmp -s CLAUDE.md workspace/CLAUDE.md
+          echo "both present, different audiences"
