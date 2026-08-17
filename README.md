@@ -29,10 +29,11 @@ models.
 
 ## Demo
 
-Asking Claude — in plain language — to bring up both local models. Each one lands in its
-own pane, against a different host on the network.
+Two local models are up, one per pane, each against a different host. Claude is asked in
+plain language to hand one of them a code review, wait for it, and report back — then it
+checks the answer against the file itself before passing it on.
 
-![Claude spawning two local model agents](docs/demo.gif)
+![Claude delegating a code review to a local model and verifying the result](docs/demo.gif)
 
 ## Why this exists
 

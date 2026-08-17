@@ -23,3 +23,6 @@ backup-*/
 *.webm
 *.mkv
 *.mov
+
+# The raw recordings and intermediate encodes. Only docs/demo.gif ships.
+docs/demo.mp4
