@@ -33,7 +33,7 @@ Two local models are up, one per pane, each against a different host. Claude is 
 plain language to hand one of them a code review, wait for it, and report back — then it
 checks the answer against the file itself before passing it on.
 
-![Claude delegating a code review to a local model and verifying the result](docs/demo.gif)
+![Claude delegating a code review to a local model and verifying the result](docs/orchestration.gif)
 
 ## Why this exists
 
